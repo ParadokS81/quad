@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { EndBehaviorType, type VoiceConnection } from '@discordjs/voice';
 import { type Guild } from 'discord.js';
 import { UserTrack, type TrackMetadata } from './track.js';
+import { writeSessionMetadata } from './metadata.js';
 import { logger } from '../../core/logger.js';
 
 export interface SessionSummary {
@@ -138,6 +139,9 @@ export class RecordingSession {
     }
 
     const trackMetadata = Array.from(this.tracks.values()).map((t) => t.getMetadata());
+
+    // Write session_metadata.json
+    await writeSessionMetadata(this, this.endTime, trackMetadata);
 
     logger.info(`Session ${this.sessionId} stopped`, {
       trackCount: this.tracks.size,

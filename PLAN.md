@@ -143,30 +143,20 @@ src/modules/recording/index.ts (rejoin detection in voiceStateUpdate)
 
 ---
 
-## Phase 5: Metadata + Pipeline Compatibility
+## Phase 5: Metadata + Pipeline Compatibility ✓
+
+**Status**: COMPLETE — 2026-02-10
 
 **Goal**: Bot writes `session_metadata.json` that the voice-analysis pipeline can consume.
 
-### Steps
-
-1. **Create `src/modules/recording/metadata.ts`**
-   - Function: `writeSessionMetadata(session: RecordingSession)` → writes JSON to `{outputDir}/session_metadata.json`
-   - Include all fields from the schema in CLAUDE.md
-   - `recording_id`: generate ULID (install `ulid` package)
-   - `source`: `"quad"`
-   - `source_version`: read from `package.json`
-   - Timestamps: ISO 8601 with millisecond precision, UTC
-
-2. **`docs/session_metadata_schema.json`** — already exists
-   - Verify it matches the actual output
-
-3. **Call metadata writer from session stop**
-   - `session.stop()` → `writeSessionMetadata(session)` → log summary
-
-4. **Test pipeline compatibility**
-   - Copy a Quad recording to `voice-analysis/recordings/raw/`
-   - Run `python src/processing/craig_parser.py` on it
-   - Verify it parses correctly (after the small update to support `recording_start_time` and `*.ogg`)
+### Implementation Notes
+- `writeSessionMetadata()` writes all fields from the schema: `schema_version`, `recording_start_time`, `recording_end_time`, `recording_id`, `source` ("quad"), `source_version`, `guild`, `channel`, `tracks`
+- `team` field included only when `TEAM_TAG` env var is set (optional per schema)
+- Used existing UUID `sessionId` as `recording_id` — ULID deferred (no extra dependency needed, UUID works fine)
+- `source_version` hardcoded as `"1.0.0"` — matches `package.json`
+- Called from `session.stop()` after all tracks are flushed
+- Schema matches `docs/session_metadata_schema.json` exactly
+- Pipeline compatibility: `craig_parser.py` in voice-analysis needs a small update to detect `source: "quad"` and read this JSON instead of `raw.dat`
 
 ### Files created
 ```
@@ -175,13 +165,12 @@ src/modules/recording/metadata.ts
 
 ### Files modified
 ```
-src/modules/recording/session.ts (call metadata writer)
-package.json (add ulid dependency)
+src/modules/recording/session.ts (import + call writeSessionMetadata)
 ```
 
-### Cross-project change (voice-analysis)
+### Cross-project change needed (voice-analysis)
 ```
-src/processing/craig_parser.py — glob *.ogg alongside *.flac, alias recording_start_time
+src/processing/craig_parser.py — detect source: "quad", glob *.ogg, read session_metadata.json
 ```
 
 ---
