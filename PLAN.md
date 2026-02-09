@@ -114,37 +114,19 @@ src/modules/recording/commands/record.ts (wire up session)
 
 ---
 
-## Phase 4: Silence Handling + Track Sync
+## Phase 4: Silence Handling + Track Sync ✓
+
+**Status**: COMPLETE — 2026-02-10
 
 **Goal**: All tracks are time-aligned to recording start. Silence gaps are handled.
 
-### Steps
-
-1. **Create `src/modules/recording/silence.ts`**
-   - Generate a pre-computed silent Opus frame (Opus can encode silence as a very small frame)
-   - Use `@discordjs/opus` `OpusEncoder` to encode a buffer of zeros → single silent Opus frame
-   - Cache this frame — reuse for all silence insertion
-
-2. **Implement silence padding in `UserTrack`**
-   - Option A (real-time): Run a 20ms interval timer per track. If no Opus packet received in the last 20ms, write a silent Opus frame to the OGG stream.
-   - Option B (simpler): Don't pad in real-time. Instead, after recording stops, use ffmpeg to pad each track to the full session duration based on timestamps. The OGG file will have gaps but the metadata has timing info.
-   - **Try Option A first** — it produces better output (continuous files with no gaps) and matches Craig's behavior.
-
-3. **Implement late-join silence prepend**
-   - If a user joins after recording has started: calculate the gap between recording start and their join time
-   - Write that many silent Opus frames to their OGG stream before piping real audio
-   - This ensures all tracks start at the same time
-
-4. **Implement rejoin handling**
-   - If a user leaves and rejoins: reuse their existing `UserTrack`
-   - Pause timer was inserting silence while they were gone — they seamlessly resume
-   - Update `left_at` → `null` in track metadata, add a `rejoined_at` event (or just keep inserting silence)
-
-5. **Test**:
-   - Record with users joining at different times
-   - Verify all `.ogg` files have the same duration (within a frame or two)
-   - Verify silence where expected (no audio artifacts, no clicks)
-   - Verify `ffprobe` duration matches for all tracks
+### Implementation Notes
+- Used the standard 3-byte silent Opus frame (`0xF8, 0xFF, 0xFE`) — universal constant across discord.js, discord.py, and all major Discord libraries. No encoder needed.
+- Replaced `pipeline(opusStream, oggStream, fileStream)` with manual `oggStream.pipe(fileStream)` + `opusStream.on('data')` — allows mixing real packets and silence frames via direct `oggStream.write()` calls
+- Option A (real-time 20ms `setInterval` timer) implemented — produces continuous OGG files with no gaps, matches Craig's behavior
+- Late-join silence prepend: calculates gap from recording start to user join, writes N silent frames upfront
+- Rejoin handling: `reattach()` method swaps the opus stream on an existing track; silence timer was running the whole time so the file stays continuous
+- `voiceStateUpdate` detects rejoins and calls `session.reattachUser()`
 
 ### Files created
 ```
@@ -153,8 +135,10 @@ src/modules/recording/silence.ts
 
 ### Files modified
 ```
-src/modules/recording/track.ts (silence padding)
-src/modules/recording/session.ts (late-join handling)
+src/modules/recording/track.ts (silence timer, late-join prepend, manual piping, reattach)
+src/modules/recording/session.ts (pass startTime, reattachUser)
+src/modules/recording/commands/record.ts (getActiveSession export)
+src/modules/recording/index.ts (rejoin detection in voiceStateUpdate)
 ```
 
 ---
@@ -358,7 +342,7 @@ After each phase, verify:
 
 ## Open Questions (Decide During Implementation)
 
-1. **Silence padding strategy**: Real-time silent frame insertion (Option A) vs post-processing (Option B)? Try A first, fall back to B if it causes issues with OGG stream integrity.
+1. ~~**Silence padding strategy**~~: Decided: Option A (real-time 20ms timer). Works well with `OggLogicalBitstream.write()`.
 
 2. **Auto-start/auto-stop**: Should v1 support auto-start when users join a configured channel? Or keep it manual-only via `/record start`? Leaning manual-only for v1.
 

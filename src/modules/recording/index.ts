@@ -7,6 +7,7 @@ import {
   isRecording,
   getRecordingChannelId,
   getRecordingGuildId,
+  getActiveSession,
   stopRecording,
 } from './commands/record.js';
 
@@ -32,11 +33,21 @@ export const recordingModule: BotModule = {
 
       const userId = newState.id;
       const leftRecordingChannel = oldState.channelId === channelId && newState.channelId !== channelId;
+      const joinedRecordingChannel = newState.channelId === channelId && oldState.channelId !== channelId;
 
       if (leftRecordingChannel) {
         const username = oldState.member?.user.username ?? userId;
         logger.info(`User left recording channel: ${username}`, { userId, channelId });
-        // Don't close their stream — silence padding handles gaps (Phase 4)
+        // Don't close their track — silence timer keeps the file continuous
+      }
+
+      if (joinedRecordingChannel) {
+        const session = getActiveSession();
+        if (session?.hasUser(userId)) {
+          // User rejoined — reattach their opus stream to the existing track
+          session.reattachUser(userId);
+        }
+        // If they don't have a track yet, the speaking event handler will create one
       }
     });
   },

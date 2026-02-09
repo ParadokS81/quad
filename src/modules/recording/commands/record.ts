@@ -39,6 +39,10 @@ export function getRecordingGuildId(): string | null {
   return activeSession?.guildId ?? null;
 }
 
+export function getActiveSession(): RecordingSession | null {
+  return activeSession;
+}
+
 export async function stopRecording(): Promise<SessionSummary | null> {
   if (!activeSession) return null;
 

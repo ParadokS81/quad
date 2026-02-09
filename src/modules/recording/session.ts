@@ -56,7 +56,12 @@ export class RecordingSession {
 
     // Subscribe to speaking events
     connection.receiver.speaking.on('start', (userId) => {
-      if (this.tracks.has(userId)) return;
+      if (this.tracks.has(userId)) {
+        // User already has a track — they may have left and rejoined.
+        // The silence timer kept their file continuous while gone.
+        // Nothing to do here; reattach is handled by voiceStateUpdate.
+        return;
+      }
 
       guild.members.fetch(userId).then((member) => {
         this.addUser(userId, member.user.username, member.displayName);
@@ -84,18 +89,11 @@ export class RecordingSession {
       username,
       displayName,
       outputDir: this.outputDir,
+      recordingStartTime: this.startTime,
     });
 
     const opusStream = this.connection.receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.Manual },
-    });
-
-    // Handle decryption errors during DAVE handshake
-    opusStream.on('error', (err) => {
-      logger.warn(`Opus stream error for ${username} (track ${trackNumber})`, {
-        error: err.message,
-        userId,
-      });
     });
 
     track.start(opusStream);
@@ -109,6 +107,18 @@ export class RecordingSession {
 
   hasUser(userId: string): boolean {
     return this.tracks.has(userId);
+  }
+
+  /** Reattach a user who left and rejoined. Their silence timer kept the file continuous. */
+  reattachUser(userId: string): void {
+    const track = this.tracks.get(userId);
+    if (!track || !this.connection) return;
+
+    const opusStream = this.connection.receiver.subscribe(userId, {
+      end: { behavior: EndBehaviorType.Manual },
+    });
+
+    track.reattach(opusStream);
   }
 
   async stop(): Promise<SessionSummary> {
