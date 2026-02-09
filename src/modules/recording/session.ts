@@ -1,5 +1,5 @@
-import { mkdir } from 'node:fs/promises';
-import { EndBehaviorType, type VoiceConnection } from '@discordjs/voice';
+import { mkdir, statfs } from 'node:fs/promises';
+import { EndBehaviorType, VoiceConnectionStatus, entersState, type VoiceConnection } from '@discordjs/voice';
 import { type Guild } from 'discord.js';
 import { UserTrack, type TrackMetadata } from './track.js';
 import { writeSessionMetadata } from './metadata.js';
@@ -27,6 +27,10 @@ export class RecordingSession {
   private tracks = new Map<string, UserTrack>();
   private nextTrackNumber = 1;
   private connection: VoiceConnection | null = null;
+  private stopping = false;
+
+  /** Called when the voice connection is destroyed externally (e.g. kicked from channel) */
+  onConnectionLost: (() => void) | null = null;
 
   constructor(opts: {
     sessionId: string;
@@ -50,10 +54,63 @@ export class RecordingSession {
     logger.info(`Session ${this.sessionId} directory created`, {
       outputDir: this.outputDir,
     });
+
+    // Disk space warning (non-blocking — never fails the session)
+    try {
+      const stats = await statfs(this.outputDir);
+      const freeBytes = stats.bfree * stats.bsize;
+      const freeGB = freeBytes / (1024 ** 3);
+      if (freeGB < 1) {
+        logger.warn(`Low disk space: ${freeGB.toFixed(2)} GB free`, {
+          outputDir: this.outputDir,
+        });
+      }
+    } catch {
+      // statfs not available on all platforms — ignore
+    }
   }
 
   start(connection: VoiceConnection, guild: Guild): void {
     this.connection = connection;
+
+    // Handle voice connection state changes
+    connection.on(VoiceConnectionStatus.Disconnected, () => {
+      if (this.stopping) return;
+
+      logger.warn(`Voice connection disconnected, attempting reconnect`, {
+        sessionId: this.sessionId,
+      });
+
+      // Try to reconnect within 30 seconds
+      Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 30_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 30_000),
+      ]).then(() => {
+        logger.info(`Voice connection reconnecting`, { sessionId: this.sessionId });
+      }).catch(() => {
+        // Could not reconnect — connection is lost
+        logger.error(`Voice connection lost — could not reconnect within 30s`, {
+          sessionId: this.sessionId,
+        });
+        if (this.onConnectionLost) {
+          this.onConnectionLost();
+        }
+      });
+    });
+
+    connection.on(VoiceConnectionStatus.Destroyed, () => {
+      if (this.stopping) return;
+
+      logger.warn(`Voice connection destroyed externally`, {
+        sessionId: this.sessionId,
+      });
+      // Connection was destroyed from outside (e.g. bot kicked).
+      // Null it out so stop() doesn't try to destroy again.
+      this.connection = null;
+      if (this.onConnectionLost) {
+        this.onConnectionLost();
+      }
+    });
 
     // Subscribe to speaking events
     connection.receiver.speaking.on('start', (userId) => {
@@ -123,6 +180,7 @@ export class RecordingSession {
   }
 
   async stop(): Promise<SessionSummary> {
+    this.stopping = true;
     this.endTime = new Date();
 
     // Stop all tracks
@@ -134,7 +192,13 @@ export class RecordingSession {
 
     // Destroy voice connection
     if (this.connection) {
-      this.connection.destroy();
+      try {
+        this.connection.destroy();
+      } catch (err) {
+        logger.warn('Error destroying voice connection (may already be destroyed)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       this.connection = null;
     }
 

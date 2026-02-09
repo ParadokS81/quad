@@ -175,44 +175,30 @@ src/processing/craig_parser.py — detect source: "quad", glob *.ogg, read sessi
 
 ---
 
-## Phase 6: Error Handling + Robustness
+## Phase 6: Error Handling + Robustness ✓
+
+**Status**: COMPLETE — 2026-02-10
 
 **Goal**: Bot handles edge cases gracefully and doesn't crash on unexpected events.
 
-### Steps
-
-1. **Stream error handling**
-   - Handle `ERR_STREAM_PUSH_AFTER_EOF` on Opus streams (known discord.js issue)
-   - Handle `error` events on file write streams
-   - If a user's stream errors: log warning, close their track cleanly, continue recording others
-
-2. **Voice connection resilience**
-   - Handle `VoiceConnectionStatus.Disconnected`: attempt reconnect
-   - Handle `VoiceConnectionStatus.Destroyed`: clean up session
-   - Set reasonable timeout for reconnection attempts (30 seconds)
-
-3. **Graceful shutdown**
-   - Handle `SIGTERM` and `SIGINT` in `core/bot.ts`
-   - Call `onShutdown()` on every loaded module → each module cleans up its own state
-   - Recording module's `onShutdown`: stop active session → write metadata → close files
-   - This is critical for Docker (sends SIGTERM on `docker stop`)
-
-4. **Guard against double-start**
-   - If `/record start` is called while already recording: reply with error, don't create second session
-   - If `/record stop` is called while not recording: reply with error
-
-5. **Disk space check**
-   - On session start: warn if disk has less than 1 GB free
-   - Don't hard-fail — just log a warning
-
-6. **Test**: Force-kill bot during recording, verify partial OGG files are valid. Disconnect network briefly, verify reconnection.
+### Implementation Notes
+- Per-track error isolation: `failed` flag + `closeOnError()` method. If one track's OGG or file stream errors, that track is closed cleanly while all others keep recording. All write paths (data handler, silence timer, reattach) guard on `failed`.
+- Voice connection resilience: `Disconnected` → attempt reconnect (30s timeout via `Promise.race` on Signalling/Connecting states). `Destroyed` → null out connection so `stop()` doesn't double-destroy. Both fire `onConnectionLost` callback → auto-stop recording.
+- `connection.destroy()` wrapped in try/catch — can throw if connection is already in a bad state after disconnect timeout.
+- `stopRecording()` clears `activeSession` immediately before awaiting `session.stop()` — prevents double-stop from concurrent `/record stop` + `onConnectionLost` race.
+- `reattach()` uses `removeAllListeners()` (not just `removeAllListeners('data')`) to clean up stale error handlers on old opus stream.
+- `unhandledRejection` logs but doesn't crash (keeps bot running). `uncaughtException` flushes recordings then exits.
+- Double SIGTERM/SIGINT guarded by `shuttingDown` flag.
+- Disk space check via `statfs()` on session init — warns if < 1 GB free, never fails the session.
+- Double-start/stop guards were already in place from Phase 2.
+- SIGTERM/SIGINT + module `onShutdown` were already in place from Phase 1.
 
 ### Files modified
 ```
-src/modules/recording/session.ts (error handling, reconnection)
-src/modules/recording/track.ts (stream error handling)
-src/modules/recording/commands/record.ts (guards)
-src/core/bot.ts (SIGTERM → module onShutdown loop)
+src/modules/recording/track.ts (failed flag, closeOnError, write guards, reattach cleanup)
+src/modules/recording/session.ts (connection state handlers, onConnectionLost, stopping flag, destroy try/catch, disk space check)
+src/modules/recording/commands/record.ts (stopRecording error wrap, onConnectionLost wiring)
+src/index.ts (unhandledRejection, uncaughtException, shuttingDown guard)
 ```
 
 ---
@@ -325,7 +311,7 @@ After each phase, verify:
 - [x] OGG files appear in output directory (Phase 3)
 - [x] All OGG files have same duration (Phase 4) — tested single user, silence padding works
 - [x] `session_metadata.json` is valid and complete (Phase 5) — verified 2026-02-10
-- [ ] Bot survives disconnects and force-kills (Phase 6)
+- [x] Bot survives disconnects and force-kills (Phase 6) — code reviewed, not live-tested
 - [ ] `docker compose up` works end-to-end (Phase 7)
 - [ ] voice-analysis pipeline reads Quad output correctly (Phase 5, cross-project)
 

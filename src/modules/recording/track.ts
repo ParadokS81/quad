@@ -21,6 +21,7 @@ export class UserTrack {
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private lastPacketTime = 0;
   private recordingStartTime: Date;
+  private failed = false;
 
   constructor(opts: {
     trackNumber: number;
@@ -56,6 +57,14 @@ export class UserTrack {
         error: err.message,
         filePath: this.filePath,
       });
+      this.closeOnError();
+    });
+
+    this.oggStream.on('error', (err) => {
+      logger.error(`OGG stream error for track ${this.trackNumber} (${this.username})`, {
+        error: err.message,
+      });
+      this.closeOnError();
     });
 
     // Pipe OGG output to file
@@ -65,6 +74,11 @@ export class UserTrack {
       userId: this.userId,
       filePath: this.filePath,
     });
+  }
+
+  /** Whether this track has been closed due to an error */
+  get isFailed(): boolean {
+    return this.failed;
   }
 
   start(opusStream: Readable): void {
@@ -85,6 +99,7 @@ export class UserTrack {
     // Listen for real packets and write them to OGG
     this.lastPacketTime = Date.now();
     opusStream.on('data', (packet: Buffer) => {
+      if (this.failed) return;
       this.lastPacketTime = Date.now();
       this.oggStream.write(packet);
     });
@@ -98,6 +113,7 @@ export class UserTrack {
 
     // Silence timer: fill gaps when user isn't talking
     this.silenceTimer = setInterval(() => {
+      if (this.failed) return;
       const elapsed = Date.now() - this.lastPacketTime;
       if (elapsed >= FRAME_DURATION_MS) {
         this.oggStream.write(SILENT_OPUS_FRAME);
@@ -111,9 +127,11 @@ export class UserTrack {
 
   /** Reattach a new opus stream (e.g. after user rejoins the channel) */
   reattach(opusStream: Readable): void {
+    if (this.failed) return;
+
     // Detach old stream if any
     if (this.opusStream) {
-      this.opusStream.removeAllListeners('data');
+      this.opusStream.removeAllListeners();
       this.opusStream.destroy();
     }
 
@@ -121,6 +139,7 @@ export class UserTrack {
     this.lastPacketTime = Date.now();
 
     opusStream.on('data', (packet: Buffer) => {
+      if (this.failed) return;
       this.lastPacketTime = Date.now();
       this.oggStream.write(packet);
     });
@@ -138,6 +157,28 @@ export class UserTrack {
     });
   }
 
+  /** Close this track due to a stream error. Other tracks keep recording. */
+  private closeOnError(): void {
+    if (this.failed) return;
+    this.failed = true;
+
+    logger.warn(`Track ${this.trackNumber} (${this.username}) closed due to error — other tracks continue`, {
+      userId: this.userId,
+    });
+
+    if (this.silenceTimer) {
+      clearInterval(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    if (this.opusStream) {
+      this.opusStream.removeAllListeners('data');
+      this.opusStream.destroy();
+      this.opusStream = null;
+    }
+    // Don't end oggStream/fileStream here — they already errored.
+    // The partial file is still valid OGG up to the error point.
+  }
+
   async stop(): Promise<void> {
     this.leftAt = new Date();
 
@@ -152,6 +193,14 @@ export class UserTrack {
       this.opusStream.removeAllListeners('data');
       this.opusStream.destroy();
       this.opusStream = null;
+    }
+
+    // If the track already failed, streams are already closed
+    if (this.failed) {
+      logger.info(`Track ${this.trackNumber} stopped (was failed): ${this.audioFile}`, {
+        username: this.username,
+      });
+      return;
     }
 
     // End the OGG stream — this flushes remaining data to fileStream

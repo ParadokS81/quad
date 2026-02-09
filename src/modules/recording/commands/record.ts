@@ -46,9 +46,18 @@ export function getActiveSession(): RecordingSession | null {
 export async function stopRecording(): Promise<SessionSummary | null> {
   if (!activeSession) return null;
 
-  const summary = await activeSession.stop();
-  activeSession = null;
-  return summary;
+  const session = activeSession;
+  activeSession = null; // Clear immediately to prevent double-stop
+
+  try {
+    return await session.stop();
+  } catch (err) {
+    logger.error('Error during session stop — files may be partial', {
+      error: err instanceof Error ? err.message : String(err),
+      sessionId: session.sessionId,
+    });
+    return null;
+  }
 }
 
 export async function handleRecordCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -140,6 +149,17 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
   // Start the session — sets up speaking listeners and subscribes to users
   activeSession.start(connection, interaction.guild);
+
+  // If the connection is lost (kicked, network failure), auto-stop and save
+  activeSession.onConnectionLost = () => {
+    logger.warn('Connection lost — auto-stopping recording', { sessionId });
+    stopRecording().catch((err) => {
+      logger.error('Failed to auto-stop recording after connection loss', {
+        error: err instanceof Error ? err.message : String(err),
+        sessionId,
+      });
+    });
+  };
 
   // Count current users in the channel (excluding the bot)
   const userCount = voiceChannel.members.filter((m) => !m.user.bot).size;

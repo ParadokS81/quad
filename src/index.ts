@@ -8,18 +8,36 @@ setLogLevel(config.logLevel);
 
 logger.info('Starting Quad', { version: '1.0.0' });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('Received SIGTERM');
-  await shutdown();
-  process.exit(0);
+// Prevent crashes from unhandled promises and exceptions
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection', {
+    error: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
 });
 
-process.on('SIGINT', async () => {
-  logger.info('Received SIGINT');
+process.on('uncaughtException', async (err) => {
+  logger.error('Uncaught exception — shutting down', {
+    error: err.message,
+    stack: err.stack,
+  });
+  await shutdown().catch(() => {});
+  process.exit(1);
+});
+
+// Graceful shutdown
+let shuttingDown = false;
+
+async function handleShutdown(signal: string): Promise<void> {
+  if (shuttingDown) return; // Prevent double shutdown
+  shuttingDown = true;
+  logger.info(`Received ${signal}`);
   await shutdown();
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 // Start with all modules
 start(config, [recordingModule]).catch((err) => {
