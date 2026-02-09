@@ -323,8 +323,8 @@ After each phase, verify:
 - [x] Bot comes online, modules loaded (Phase 1)
 - [x] Bot joins voice channel on `/record start` (Phase 2)
 - [x] OGG files appear in output directory (Phase 3)
-- [ ] All OGG files have same duration (Phase 4)
-- [ ] `session_metadata.json` is valid and complete (Phase 5)
+- [x] All OGG files have same duration (Phase 4) — tested single user, silence padding works
+- [x] `session_metadata.json` is valid and complete (Phase 5) — verified 2026-02-10
 - [ ] Bot survives disconnects and force-kills (Phase 6)
 - [ ] `docker compose up` works end-to-end (Phase 7)
 - [ ] voice-analysis pipeline reads Quad output correctly (Phase 5, cross-project)
@@ -335,6 +335,6 @@ After each phase, verify:
 
 2. **Auto-start/auto-stop**: Should v1 support auto-start when users join a configured channel? Or keep it manual-only via `/record start`? Leaning manual-only for v1.
 
-3. **ULID vs UUID**: ULID is preferred for `recording_id` (time-sortable), but UUID is more standard. ULID is a small dependency. Go with ULID unless there's a reason not to.
+3. ~~**ULID vs UUID**~~: Decided: UUID for now. No extra dependency, works fine as `recording_id`. Can switch to ULID later if time-sortability matters.
 
-4. **Session ID format**: Use the ULID as both `recording_id` and directory name? Or use a human-readable format like `2026-02-03_2108`? ULID for the ID, but directory name could be either.
+4. ~~**Session ID format**~~: UUID for both `recording_id` and directory name. Simple and consistent.
