@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean -f *)"
+    ],
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash(*)",
+      "WebSearch",
+      "WebFetch(domain:discord.js.org)",
+      "WebFetch(domain:discordjs.guide)",
+      "WebFetch(domain:discord.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:nodejs.org)",
+      "WebFetch(domain:hub.quakeworld.nu)",
+      "WebFetch(domain:www.quakeworld.nu)",
+      "WebFetch(domain:daveprotocol.com)",
+      "Task(*)"
+    ]
+  }
+}

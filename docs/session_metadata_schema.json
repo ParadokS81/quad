@@ -1,0 +1,142 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Quad Session Metadata",
+  "description": "Public contract for Discord voice recording session metadata. Designed for interoperability across QW teams and future Hub integration.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "recording_start_time",
+    "recording_end_time",
+    "recording_id",
+    "source",
+    "source_version",
+    "guild",
+    "channel",
+    "tracks"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for forward compatibility. Bump on breaking changes."
+    },
+    "recording_start_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC with millisecond precision. When recording began."
+    },
+    "recording_end_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC with millisecond precision. When recording ended."
+    },
+    "recording_id": {
+      "type": "string",
+      "description": "Unique identifier for this recording session. ULID preferred (time-sortable)."
+    },
+    "source": {
+      "type": "string",
+      "description": "What produced this file. 'quad' for this bot, 'craig' for Craig exports.",
+      "examples": ["quad", "craig"]
+    },
+    "source_version": {
+      "type": "string",
+      "description": "Version of the source software. Semver format.",
+      "examples": ["1.0.0"]
+    },
+    "guild": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Discord guild (server) snowflake ID. Stable across name changes."
+        },
+        "name": {
+          "type": "string",
+          "description": "Discord guild display name at time of recording."
+        }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Discord voice channel snowflake ID."
+        },
+        "name": {
+          "type": "string",
+          "description": "Discord voice channel display name at time of recording."
+        }
+      }
+    },
+    "team": {
+      "type": "object",
+      "description": "QW team info. Optional — set via bot configuration.",
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "QW team tag as it appears in-game, e.g. ']sr['. Used for Hub match pairing.",
+          "examples": ["]sr[", "nqr", "sr"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Team display name.",
+          "examples": ["Slackers"]
+        }
+      }
+    },
+    "tracks": {
+      "type": "array",
+      "description": "Per-speaker audio tracks. One entry per user who was in the channel.",
+      "items": {
+        "type": "object",
+        "required": [
+          "track_number",
+          "discord_user_id",
+          "discord_username",
+          "discord_display_name",
+          "joined_at",
+          "left_at",
+          "audio_file"
+        ],
+        "properties": {
+          "track_number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based track number. Matches filename prefix."
+          },
+          "discord_user_id": {
+            "type": "string",
+            "description": "Discord user snowflake ID. Stable unique identifier."
+          },
+          "discord_username": {
+            "type": "string",
+            "description": "Discord username (not nickname). Used in filename."
+          },
+          "discord_display_name": {
+            "type": "string",
+            "description": "Discord display name / global name at time of recording."
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this user joined the voice channel. ISO 8601 UTC."
+          },
+          "left_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "When this user left the voice channel. Null if still present at recording end."
+          },
+          "audio_file": {
+            "type": "string",
+            "description": "Filename of the audio track. Format: '{track_number}-{username}.ogg'.",
+            "pattern": "^\\d+-[\\w.-]+\\.ogg$"
+          }
+        }
+      }
+    }
+  }
+}
