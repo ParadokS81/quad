@@ -1,0 +1,9 @@
+services:
+  quad:
+    build: .
+    volumes:
+      - ./recordings:/app/recordings
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "${HEALTH_PORT:-3000}:3000"

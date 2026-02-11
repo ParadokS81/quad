@@ -1,0 +1,10 @@
+node_modules
+dist
+recordings
+exports
+.env
+.git
+.gitignore
+.claude
+*.md
+docs

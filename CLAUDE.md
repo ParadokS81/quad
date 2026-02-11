@@ -204,6 +204,14 @@ Environment variables (Docker-friendly):
 - `TEAM_TAG` — QW team tag for metadata (default: none)
 - `TEAM_NAME` — team display name (default: guild name)
 - `LOG_LEVEL` — debug/info/warn/error (default: `info`)
+- `HEALTH_PORT` — health endpoint port (default: `3000`)
+- `ANTHROPIC_API_KEY` — for Claude analysis (optional)
+- `WHISPER_MODEL` — tiny/base/small/medium/turbo (default: `small`)
+- `PLAYER_QUERY` — QW Hub player search term
+- `PLAYER_NAME_MAP` — comma-separated `discord:QWName` pairs
+- `PROCESSING_AUTO` — auto-run fast pipeline after recording (default: `true`)
+- `PROCESSING_TRANSCRIBE` — auto-run transcription (default: `false`)
+- `PROCESSING_INTERMISSIONS` — extract between-map discussion (default: `true`)
 
 ## Project Structure
 
@@ -302,6 +310,40 @@ CRC checksums require `node-crc@^1.3.2` (must be v1, CJS — v3+ is ESM-only and
 1. **Custom OGG muxer** (~100-150 lines) — OGG page format is simple and well-documented. The prism-media author wrote a guide: https://gist.github.com/amishshah/68548e803c3208566e36e55fe1618e1c
 2. **ffmpeg pipe** — `spawn('ffmpeg', ['-f', 'opus', '-i', 'pipe:0', '-c', 'copy', 'output.ogg'])`. Rock-solid but adds a process per speaker and a system dependency.
 3. **Raw capture + post-process** — What Craig and Pandora do. Dump raw Opus packets with timestamps, mux into OGG later. More complex, only worth it if we need two-phase processing.
+
+## Deployment — Xerial's Server
+
+### Server Details
+- **Host**: `83.172.66.214`, port `5555`
+- **User**: `qwvoice`
+- **SSH key**: `~/.ssh/qwvoice_key`
+- **GPU**: NVIDIA RTX 4090 (24GB VRAM) — transcription is fast
+- **Existing service**: `qwvoice-whisper` container already running at `/srv/qwvoice/docker/`
+
+### SSH Access (restricted shell)
+```bash
+ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214
+```
+
+Allowed commands: `up`, `down`, `restart`, `logs`, `ps`, `exec [cmd...]`
+
+Cannot: `docker build`, `scp`, run arbitrary shell commands. Xerial manages the Docker compose config on his end.
+
+### SCP (file transfer)
+```bash
+scp -i ~/.ssh/qwvoice_key -P 5555 file qwvoice@83.172.66.214:/srv/qwvoice/data/input/
+```
+
+### Update Workflow
+1. Develop + test locally (compile with `/build`, test with `/dev`)
+2. Commit and push to git
+3. Ask Xerial (or his Claude) to `git pull && docker compose up -d --build`
+4. Recordings persist across rebuilds (volume-mounted, not inside the container)
+
+### Notes
+- Xerial runs Claude Code on his Ubuntu server — coordinate via Discord messages
+- The restricted shell is intentional (security). Don't try to bypass it.
+- RTX 4090 means GPU-accelerated whisper — use `device="auto"` (not `"cpu"`)
 
 ## Development Workflow
 
