@@ -150,18 +150,3 @@ export async function formatWhisperCorrections(): Promise<string> {
   }
   return lines.join('\n');
 }
-
-/**
- * Parse PLAYER_NAME_MAP env var format: "key1:val1,key2:val2"
- */
-export function parsePlayerNameMap(raw: string): Record<string, string> {
-  if (!raw.trim()) return {};
-  const map: Record<string, string> = {};
-  for (const pair of raw.split(',')) {
-    const [key, value] = pair.split(':', 2);
-    if (key && value) {
-      map[key.trim().toLowerCase()] = value.trim();
-    }
-  }
-  return map;
-}

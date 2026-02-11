@@ -143,8 +143,8 @@ export async function splitByTimestamps(
 ): Promise<SegmentMetadata[]> {
   const segments: SegmentMetadata[] = [];
 
-  // Resolve audio file paths from session recording directory
-  const recordingDir = join(outputDir, '..', session.recording_id);
+  // Raw OGG files live in the session dir (parent of processed/)
+  const recordingDir = join(outputDir, '..');
 
   // Pre-fetch all track durations via ffprobe
   const trackDurations = new Map<number, number>();
@@ -276,7 +276,8 @@ export async function extractIntermissions(
   playerNameMap: Record<string, string> = {},
   minGapSeconds: number = 30,
 ): Promise<SegmentMetadata[]> {
-  const recordingDir = join(outputDir, '..', session.recording_id);
+  // Raw OGG files live in the session dir (parent of processed/)
+  const recordingDir = join(outputDir, '..');
 
   // Get total recording duration from longest track
   let recordingDuration = 0;
