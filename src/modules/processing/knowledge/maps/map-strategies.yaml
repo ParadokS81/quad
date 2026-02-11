@@ -1,0 +1,132 @@
+# QW Voice Analysis - Map Strategy Context
+# Used by Claude analysis to understand strategic context of callouts
+# Sources: quakeworld.nu/wiki + team corrections
+
+dm3:
+  name: "The Abandoned Base"
+  author: "John Romero (1996)"
+  size: large
+  items:
+    quad: 1
+    pent: 1
+    ring: 1
+    red_armor: 1
+    yellow_armor: 1
+    mega: 3  # SNG mega, pent mega, center mega
+    rocket_launcher: 1
+    lightning_gun: 1
+    super_nailgun: 1
+    grenade_launcher: 1
+  key_strategies:
+    - "Quad control is central - quad spawns above hill, accessible via strafejump from ring"
+    - "Red armor room has multiple catwalk levels, high traffic area"
+    - "Pent-to-window rocketjump is fundamental team movement"
+    - "3 megas spread across map: SNG, pent area, center"
+    - "Bridge is the large central area - not a small bridge"
+    - "Flood red armor room from multiple entrances simultaneously"
+    - "Pre-fire rockets/grenades at pent 5s before spawn"
+    - "Station player at bridge stairs for catwalk + water coverage"
+
+dm2:
+  name: "Claustrophobopolis"
+  author: "American McGee (1996)"
+  size: large
+  items:
+    quad: 1
+    pent: 0
+    ring: 0
+    red_armor: 2  # RA+mega room (backroom) and secret
+    yellow_armor: 3  # Big room x2, tele
+    mega: 2  # Big room upper, backroom
+    rocket_launcher: 2  # High RL (quad area), low RL
+    lightning_gun: 0  # No LG on this map
+    grenade_launcher: 1
+  key_strategies:
+    - "No LG means rocket aim and strategy dominates"
+    - "Key to dm2: control quad-nailgun-teleporter area"
+    - "Tele always means YA tele specifically"
+    - "One player defends low tele (never leaves post)"
+    - "Quad runner cycles: quad -> water -> low -> backroom"
+    - "Backroom has RA + mega + rockets - critical area"
+    - "Secret room has second red armor, risky water exit"
+    - "When losing control: spread at low to slow quad runner"
+    - "Push strategy: RA+RL player goes tele with 2 weaker teammates as distraction"
+    - "'Slipping' ALWAYS means going through YA tele to high - the only tele on dm2"
+    - "'boomstick at [area]' means enemy has only SG there - context-dependent: safe to push OR warning for weak RL teammate"
+
+e1m2:
+  name: "Castle of the Damned"
+  author: "John Romero (1996)"
+  size: medium
+  items:
+    quad: 1
+    pent: 0
+    ring: 0
+    red_armor: 0  # No RA on this map
+    yellow_armor: 1
+    green_armor: 1  # At bridge/green area
+    mega: 1  # Mega room (biggest room)
+    rocket_launcher: 1
+    lightning_gun: 0  # No LG on this map
+    super_nailgun: 2
+    grenade_launcher: 1
+    super_shotgun: 1
+  key_strategies:
+    - "Shotgun-centric map due to light armor and no LG"
+    - "Yellow armor control is foundational - most essential area"
+    - "Mega room is the biggest room on the map"
+    - "Green armor area is also called bridge"
+    - "GL area connects yellow armor and quad"
+    - "Save packs and ammo for teammates - weapon scarcity matters"
+    - "Whole team can stack yellow armor if defended properly"
+    - "Tight corridors create multi-kill opportunities"
+    - "RL room timing critical - vulnerable from 3 directions"
+    - "Flood yellow armor from spikes, gl-stairs, and sng simultaneously"
+    - "No red armor, no pent, no LG, no ring on this map"
+
+schloss:
+  name: "Schloss Adler"
+  author: "Zaka (2004)"
+  size: large
+  items:
+    quad: 1
+    pent: 1
+    ring: 1
+    red_armor: 1
+    yellow_armor: 2
+    mega: 2
+    rocket_launcher: 2
+    lightning_gun: 2
+    grenade_launcher: 1
+    super_shotgun: 1
+  key_strategies:
+    - "Cathedral shortened to 'cat' in voice comms"
+    - "Quad-low spawn is fastest to pent (left through tunnel)"
+    - "Tower secures RL and yellow armor quickly"
+    - "Cemetery tele can reach red, ring, or mega first"
+    - "Coordinate openers based on spawn identification"
+    - "Yard area has pent - key control point"
+
+phantombase:
+  name: "Phantom Base"
+  author: "QuakeR (2021)"
+  size: large
+  items:
+    quad: 1
+    pent: 1
+    ring: 1
+    red_armor: 2
+    yellow_armor: 1
+    green_armor: 1
+    mega: 1
+    rocket_launcher: 2
+    lightning_gun: 1
+    grenade_launcher: 1
+    super_shotgun: 3
+  key_strategies:
+    - "Three vertical levels: floor, first-level, sewer"
+    - "LG spawn reaches LG in 3 seconds with cell pack route to red"
+    - "Fastest quad access from green/SSG spawn (3-4 sec)"
+    - "Ring access from multiple spawns creates chaotic convergence"
+    - "Pent accessible within 5 seconds from certain spawns"
+    - "Water areas have ring, mega, RL - important sewer control"

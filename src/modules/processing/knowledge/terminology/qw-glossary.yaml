@@ -1,0 +1,283 @@
+# QW Voice Analysis - QuakeWorld Glossary
+# Terms for Whisper initial_prompt and Claude analysis context
+# Corrected with actual ]sr[ team callout conventions
+
+items:
+  powerups:
+    - quad      # Quad Damage (4x damage, 30s, respawns every 60s)
+    - pent      # Pentagram of Protection (invulnerability, 30s)
+    - ring      # Ring of Shadows (invisibility, 30s)
+  armor:
+    - red       # Red Armor (200 armor) - called "red" not "ra"
+    - yellow    # Yellow Armor (150 armor) - called "yellow" not "ya"
+    - green     # Green Armor (100 armor) - called "green" not "ga"
+  health:
+    - mega      # Megahealth (100hp, decays)
+  weapons:
+    - rocket    # Rocket Launcher (30s respawn)
+    - shaft     # Lightning Gun - also called "lg" or "lightning gun"
+    - grenade   # Grenade Launcher
+    - sng       # Super Nailgun - also called "super nailgun"
+    - nailgun   # Nailgun
+    - buckshot  # Super Shotgun (SSG)
+    - boomstick # Shotgun (SG) - also called "shotgun"
+
+actions:
+  - get quad        # Pick up Quad Damage
+  - quad soon       # Quad spawning soon
+  - quad up         # Quad has spawned
+  - pack            # Backpack (dropped items from kill)
+  - bore pack       # Self-rocket to drop a pack with RL for teammate (also "bore packs")
+  - tp              # Teleporter
+  - tele            # Teleporter (more common spoken form)
+  - spawn           # Respawn point
+  - stack           # Well-equipped (high health + armor)
+  - stacked         # Very well-equipped
+  - fat             # Same as stacked - well-equipped
+  - strong          # Same as stacked - well-equipped
+  - weak            # Low on health/armor - "im fucking weak"
+  - almost dead     # Very low health
+  - so dead         # About to die
+  - one shot        # Enemy is nearly dead
+  - out             # Died / lost control
+  - lost            # Died (often triggers mm2 death message showing location)
+  - coming          # Moving towards a location
+  - holding         # Controlling an area
+  - push            # Aggressive move together
+  - fall back       # Retreat
+  - regroup         # Meet up at a location
+  - lock            # Hold position / lock down area
+  - map lock        # Team has full map control (enemy can't get weapons)
+  - spam            # Shoot at area for denial
+  - safe            # Area is clear / under control (e.g. "back safe")
+  - zone            # Holding/controlling a zone (e.g. "red zone")
+  - flood           # Multiple enemies rushing an area (e.g. "they flood me")
+  - build           # Gather weapons/armor before a push (e.g. "build for penta")
+  - gl hf           # Good luck have fun (pre-match)
+  - team quad       # Calling for team to group for quad pickup
+  - team pent       # Calling for team to group for pent
+  - slip            # Enemy teleported (slipped) through YA tele to high (dm2-specific)
+  - brösting        # Swedish term: self-damage (like chest-bumping) - doing self-rocket damage
+
+# Item timing callouts
+# Weapons respawn every 30 seconds. Players have in-game clocks counting up.
+# When you pick up a weapon at 12:15, you say "rocket on 45" (spawns at xx:45)
+timing_patterns:
+  # "[location/item] on [time]" - item spawns at that second mark of the current minute
+  # "[location/item] in [x]" - item spawns in x seconds from now
+
+# Note: "low" in callouts usually refers to a map location (low rocket, low area),
+# NOT low health. Low health is expressed as "weak", "almost dead", "so dead".
+
+# Common Whisper transcription errors (misheard QW terms)
+whisper_corrections:
+  - misheard: "myrton"
+    correct: "Milton"
+    context: "opponent player name"
+  - misheard: "borpax"
+    correct: "bore packs"
+    context: "self-rocket to drop pack with RL"
+  - misheard: "mutant"
+    correct: "Milton"
+    context: "opponent player name"
+  - misheard: "Minotone"
+    correct: "Milton"
+    context: "opponent player name"
+  - misheard: "grizzling"
+    correct: "grisling"
+    context: "teammate player name"
+  - misheard: "rock tie"
+    correct: "rock high"
+    context: "rocket at high RL location (tie sounds like high)"
+  - misheard: "breasted"
+    correct: "brösting"
+    context: "Swedish term for self-damage (self-rocket). Used by carapace"
+  - misheard: "weak in pot"
+    correct: "weak in path"
+    context: "enemy weak at path location"
+  - misheard: "house backroom"
+    correct: "our backroom"
+    context: "backroom is under our control / safe"
+  - misheard: "soldered"
+    correct: "so dead"
+    context: "zero's pronunciation of 'so dead' - means completely dead / no chance"
+  - misheard: "I'm sold out"
+    correct: "I'm so dead"
+    context: "zero - same as soldered, means dead or about to die"
+  - misheard: "woody"
+    correct: "unknown - needs verification"
+    context: "possibly opponent name or location"
+
+# Known player names (opponents and teammates) for Whisper vocab biasing
+known_player_names:
+  - ParadokS
+  - zero
+  - grisling
+  - carapace
+  - bps
+  - Razor
+  - Milton
+  - sae
+  - stepcop
+  - Javve
+
+map_callouts:
+  dm3:
+    - bridge
+    - bridge high
+    - bridge low
+    - bridge stairs
+    - rocket-box
+    - water
+    - water gl
+    - water lg
+    - water tunnel
+    - water rox
+    - hill
+    - sng
+    - sng low
+    - sng tele
+    - sng mega
+    - sng ledge
+    - sng lifts
+    - pent
+    - pent hide
+    - center
+    - red
+    - red low
+    - red tunnel
+    - red rox
+    - red entry
+    - yellow
+    - yellow up
+    - yellow box
+    - yellow entry
+    - quad
+    - ring
+    - window
+    - lifts
+    - lifts below
+
+  dm2:
+    - big
+    - big wall
+    - big stairs
+    - big button
+    - tele
+    - tele high
+    - tele entry
+    - water
+    - ng
+    - secret
+    - quad
+    - quad low
+    - quad high
+    - quad way
+    - quad button
+    - high rl
+    - low rl
+    - low button
+    - low stairs
+    - low lift
+    - backroom
+    - platforms
+    - path
+    - path lift
+    - floating
+    - gl
+    - gl roof
+    - red mega
+
+  e1m2:
+    - mega
+    - mega low
+    - mega sng
+    - mega exit
+    - mega rox
+    - mega above
+    - mega entry
+    - green
+    - bridge
+    - bridge room
+    - yellow
+    - yellow water
+    - yellow tele
+    - yellow spikes
+    - yellow up
+    - quad
+    - quad stairs
+    - quad box
+    - start
+    - start stairs
+    - start water
+    - start rl
+    - start window
+    - start hide
+    - rl
+    - water rl
+    - water green
+    - water spikes
+    - gl
+    - gl sng
+    - gl stairs
+    - gl rox
+    - ssg
+    - ssg spikes
+    - spikes
+    - door
+    - cross
+    - cross water
+
+  schloss:
+    - red
+    - red low
+    - red window
+    - red cellar
+    - yard
+    - yard pent
+    - yard tunnel
+    - yard roof
+    - tower
+    - tower entry
+    - tower rl
+    - quad
+    - quad low
+    - quad high
+    - quad ledge
+    - cemetary
+    - cemetary tele
+    - cemetary ring
+    - cat
+    - cat yellow
+    - cat ssg
+
+  phantombase:
+    - quad
+    - quad platform
+    - quad low
+    - pent
+    - pent low
+    - pent tele
+    - red
+    - red stairs
+    - red below
+    - red sng
+    - yellow
+    - yellow up
+    - yellow rl
+    - yellow water
+    - yellow spikes
+    - yellow tele
+    - lg
+    - lg high
+    - lg low
+    - gl
+    - green
+    - cross
+    - water
+    - water mh
+    - water rl
+    - water ledge
+    - water ladder
+    - water ring
+    - water stand

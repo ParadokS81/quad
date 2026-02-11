@@ -1,0 +1,87 @@
+# QW Voice Analysis - Per-Map Report Template
+# Defines the structure of Claude's analysis output.
+# Sections can be added, removed, or reordered here without code changes.
+# The analyzer builds the analysis prompt dynamically from these sections.
+
+sections:
+  - id: match_summary
+    title: "Match Summary"
+    instruction: >
+      Summarize the match: final score, map, teams, and key context.
+      Note any standins or unusual roster situations.
+
+  - id: communication_balance
+    title: "Communication Balance"
+    instruction: >
+      Analyze per-player speaking stats (segments, speaking time, words, WPM).
+      Is the distribution healthy for team roles? Who talks most/least and is that appropriate?
+      Compare speaking volume to in-game role (fragger, support, caller).
+
+  - id: callout_quality
+    title: "Callout Quality"
+    instruction: >
+      Assess terminology consistency, timing precision, and clarity.
+      Are callouts using correct QW conventions (armor by color, weapons by name)?
+      Are item timing calls precise ("quad on 45") or vague ("quad soon")?
+      Quote specific good and bad examples with timestamps.
+
+  - id: weapon_tracking
+    title: "Weapon Tracking"
+    instruction: >
+      How well does the team track enemy weapons? Look for sequential location
+      callouts following a weapon carrier (e.g. "rocket red" -> "rocket tunnel").
+      Are enemy weapon positions being communicated effectively?
+      Does the team name specific enemies when tracking?
+
+  - id: item_control_comms
+    title: "Item Control & Communication"
+    instruction: >
+      Correlate item timing callouts with actual item pickups from ktxstats.
+      Are items being called before pickup? Is the team coordinating for quad/pent?
+      Are armor and mega pickups being reported?
+
+  - id: overlap_analysis
+    title: "Overlap Analysis"
+    instruction: >
+      Analyze speech overlaps. Are they complementary (two useful calls simultaneously)
+      or disruptive (one player drowning out another)? When do overlaps spike?
+      Which player pairs overlap most?
+
+  - id: silence_gaps
+    title: "Silence Gaps"
+    instruction: >
+      Identify quiet periods (gaps > 5 seconds with no voice comms).
+      Do they correlate with deaths, respawns, or loss of map control?
+      Are there moments where someone should have called but didn't?
+
+  - id: comms_performance
+    title: "Comms-Performance Correlation"
+    instruction: >
+      How do communication patterns relate to in-game performance?
+      Do high-fraggers call more or less? Do communication gaps align with
+      death streaks? Does the team go quiet when losing control?
+
+  - id: intermission
+    title: "Between-Map Discussion"
+    instruction: >
+      If intermission data is available: what is the team discussing between maps?
+      Are they debriefing the previous map, planning strategy for the next,
+      or just chatting/venting? Does the tone suggest good team morale?
+    optional: true
+
+  - id: player_recommendations
+    title: "Player Recommendations"
+    instruction: >
+      Concrete per-player actions to improve communication. Be specific -
+      reference exact timestamps, quotes, and examples from this match.
+      Prioritize the most impactful changes.
+
+  - id: transcription_issues
+    title: "Transcription Issues"
+    instruction: >
+      List suspected speech-to-text errors as a markdown table with columns:
+      | Heard | Likely Meant | Confidence | Timestamp | Context |
+      Include: misheard player names, QW terms transcribed as English words,
+      fragments that seem cut off mid-word, and any nonsensical phrases.
+      Confidence should be high/medium/low based on surrounding context.
+    self_improving: true
