@@ -1,4 +1,4 @@
-import { mkdir, statfs } from 'node:fs/promises';
+import { mkdir, statfs, stat } from 'node:fs/promises';
 import { EndBehaviorType, VoiceConnectionStatus, entersState, type VoiceConnection } from '@discordjs/voice';
 import { type Guild } from 'discord.js';
 import { UserTrack, type TrackMetadata } from './track.js';
@@ -8,6 +8,7 @@ import { logger } from '../../core/logger.js';
 export interface SessionSummary {
   sessionId: string;
   outputDir: string;
+  channelId: string;
   trackCount: number;
   tracks: TrackMetadata[];
   startTime: Date;
@@ -207,14 +208,28 @@ export class RecordingSession {
     // Write session_metadata.json
     await writeSessionMetadata(this, this.endTime, trackMetadata);
 
+    // Calculate total file size across all tracks
+    let totalBytes = 0;
+    for (const track of this.tracks.values()) {
+      try {
+        const s = await stat(track.filePath);
+        totalBytes += s.size;
+      } catch {
+        // Track may have failed
+      }
+    }
+    const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
+
     logger.info(`Session ${this.sessionId} stopped`, {
       trackCount: this.tracks.size,
       duration: `${Math.round((this.endTime.getTime() - this.startTime.getTime()) / 1000)}s`,
+      totalSize: `${totalMB} MB`,
     });
 
     return {
       sessionId: this.sessionId,
       outputDir: this.outputDir,
+      channelId: this.channelId,
       trackCount: this.tracks.size,
       tracks: trackMetadata,
       startTime: this.startTime,

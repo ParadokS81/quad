@@ -60,6 +60,17 @@ export async function stopRecording(): Promise<SessionSummary | null> {
   }
 }
 
+function formatDuration(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  return `${minutes}m ${seconds}s`;
+}
+
 export async function handleRecordCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand();
 
@@ -163,9 +174,18 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
   // Count current users in the channel (excluding the bot)
   const userCount = voiceChannel.members.filter((m) => !m.user.bot).size;
+  const startUnix = Math.floor(activeSession.startTime.getTime() / 1000);
+  const shortId = sessionId.slice(0, 8);
 
   await interaction.reply({
-    content: `Recording started in #${voiceChannel.name}. ${userCount} user(s) in channel.`,
+    content: [
+      `\u{1F534} **Recording started**`,
+      ``,
+      `**Channel:** <#${voiceChannel.id}>`,
+      `**Recording ID:** \`${shortId}\``,
+      `**Started:** <t:${startUnix}:t>`,
+      `**Users in channel:** ${userCount}`,
+    ].join('\n'),
     flags: MessageFlags.Ephemeral,
   });
 
@@ -199,12 +219,21 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
 
   if (summary) {
     const durationSec = Math.round((summary.endTime.getTime() - summary.startTime.getTime()) / 1000);
-    const minutes = Math.floor(durationSec / 60);
-    const seconds = durationSec % 60;
-    const trackList = summary.tracks.map((t) => `  ${t.track_number}. ${t.discord_display_name}`).join('\n');
+    const duration = formatDuration(durationSec);
+    const shortId = summary.sessionId.slice(0, 8);
+    const trackList = summary.tracks.map((t) => `${t.track_number}. ${t.discord_display_name}`).join('\n');
 
     await interaction.editReply({
-      content: `Recording stopped. ${summary.trackCount} track(s), ${minutes}m ${seconds}s.\nSession: \`${summary.sessionId}\`\n${trackList}`,
+      content: [
+        `\u2B1B **Recording ended**`,
+        ``,
+        `**Channel:** <#${summary.channelId}>`,
+        `**Recording ID:** \`${shortId}\``,
+        `**Duration:** ${duration}`,
+        `**Tracks:** ${summary.trackCount}`,
+        ``,
+        trackList,
+      ].join('\n'),
     });
   } else {
     await interaction.editReply({ content: 'Recording stopped.' });

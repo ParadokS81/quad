@@ -4,6 +4,7 @@ export interface Config {
   teamTag: string;
   teamName: string;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+  healthPort: number;
 }
 
 export function loadConfig(): Config {
@@ -19,5 +20,6 @@ export function loadConfig(): Config {
     teamTag: process.env.TEAM_TAG || '',
     teamName: process.env.TEAM_NAME || '',
     logLevel: (process.env.LOG_LEVEL as Config['logLevel']) || 'info',
+    healthPort: parseInt(process.env.HEALTH_PORT || '3000', 10),
   };
 }

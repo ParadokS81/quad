@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits, MessageFlags, REST, Routes } from 'd
 import { type Config } from './config.js';
 import { type BotModule } from './module.js';
 import { logger } from './logger.js';
+import { startHealthServer, stopHealthServer } from './health.js';
 
 let client: Client;
 let loadedModules: BotModule[] = [];
@@ -57,10 +58,15 @@ export async function start(config: Config, modules: BotModule[]): Promise<void>
 
   // Login
   client.once(Events.ClientReady, async (readyClient) => {
-    logger.info(`Bot online as ${readyClient.user.tag}`);
+    logger.info(`Bot online as ${readyClient.user.tag}`, {
+      modules: modules.map((m) => m.name),
+    });
 
     // Register slash commands with Discord
     await registerCommands(config.discordToken, readyClient.user.id, modules);
+
+    // Start health endpoint
+    startHealthServer(config.healthPort, modules.map((m) => m.name));
 
     // Call onReady on each module
     for (const mod of modules) {
@@ -107,6 +113,8 @@ export async function shutdown(): Promise<void> {
       }
     }
   }
+
+  await stopHealthServer();
 
   if (client) {
     client.destroy();

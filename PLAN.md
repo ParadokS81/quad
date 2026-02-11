@@ -324,3 +324,234 @@ After each phase, verify:
 3. ~~**ULID vs UUID**~~: Decided: UUID for now. No extra dependency, works fine as `recording_id`. Can switch to ULID later if time-sortability matters.
 
 4. ~~**Session ID format**~~: UUID for both `recording_id` and directory name. Simple and consistent.
+
+---
+---
+
+# Processing Module — Integration Plan
+
+> Port the voice-analysis Python pipeline into Quad as a TypeScript module.
+> Source project: `/home/paradoks/projects/quake/voice-analysis/`
+
+## Context
+
+Recording bot is complete. The `voice-analysis` Python project has a proven pipeline: parse recordings → query QW Hub → pair matches → split audio → transcribe → analyze. The goal is to bundle this into Quad so any QW clan gets the full capability from `docker-compose up`.
+
+**Approach:** Port to TypeScript. One exception: transcription calls a thin Python wrapper around `faster-whisper` (~50 lines) because Node.js whisper bindings lack VAD filtering and word-level timestamps. Docker bundles Python + faster-whisper for this one step.
+
+---
+
+## What Gets Ported
+
+### Port to TypeScript (~1100 lines)
+| Python file | TS file | Lines | Notes |
+|---|---|---|---|
+| `pipeline.py` (modern path only) | `pipeline.ts` | ~150 | Drop legacy tone-detection mode |
+| `qwhub_client.py` | `hub-client.ts` | ~100 | `fetch()` replaces `httpx` |
+| `match_pairer.py` | `match-pairer.ts` | ~150 | Pure math, direct port |
+| `timestamp_splitter.py` | `audio-splitter.ts` | ~200 | `child_process.execFile('ffmpeg')` |
+| `transcriber.py` re-segmentation | `transcriber.ts` | ~120 | Spawns Python, then re-segments in TS |
+| `timeline_merger.py` | `timeline-merger.ts` | ~130 | Pure data manipulation |
+| `analyzer.py` | `analyzer.ts` | ~250 | `@anthropic-ai/sdk`, same prompts |
+| `audio_utils.py` | `utils.ts` | ~80 | YAML loading, player name resolution |
+
+### Keep as Python (~50 lines)
+| File | Purpose |
+|---|---|
+| `scripts/transcribe.py` | Thin wrapper: load faster-whisper, transcribe all tracks in a directory, output raw segments + word timestamps as JSON. TS does re-segmentation. |
+
+### Copy as-is (YAML knowledge bases)
+- `knowledge/terminology/qw_glossary.yaml` → `src/modules/processing/knowledge/terminology/qw-glossary.yaml`
+- `knowledge/maps/map_strategies.yaml` → `src/modules/processing/knowledge/maps/map-strategies.yaml`
+- `knowledge/templates/map_report.yaml` → `src/modules/processing/knowledge/templates/map-report.yaml`
+
+### Don't port
+- `tone_detector.py`, `audio_splitter.py` — legacy
+- `craig_parser.py` — we read our own `session_metadata.json`
+- `generate_tones.py` — legacy capture helper
+
+---
+
+## Architecture
+
+```
+src/modules/processing/
+├── index.ts                     # BotModule: /process command, auto-trigger hook
+├── commands/
+│   └── process.ts               # /process status|transcribe|analyze|rerun
+├── pipeline.ts                  # Orchestrator — two-stage (fast + slow)
+├── stages/
+│   ├── hub-client.ts            # QW Hub Supabase API + ktxstats fetcher
+│   ├── match-pairer.ts          # Confidence scoring, offset calc, overlap trim
+│   ├── audio-splitter.ts        # ffmpeg stream-copy splitting + ffprobe
+│   ├── transcriber.ts           # Spawn Python wrapper, re-segment by silence gaps
+│   ├── timeline-merger.ts       # Merge transcripts, overlaps, stats
+│   └── analyzer.ts              # Claude API analysis with ktxstats + map knowledge
+├── knowledge/                   # YAML files from voice-analysis
+│   ├── terminology/qw-glossary.yaml
+│   ├── maps/map-strategies.yaml
+│   └── templates/map-report.yaml
+├── types.ts                     # MatchPairing, SessionData, TranscriptSegment, etc.
+└── utils.ts                     # YAML loader, player name resolution, prompt builder
+
+scripts/
+└── transcribe.py                # Thin faster-whisper wrapper (~50 lines)
+```
+
+### New dependencies
+- `js-yaml` + `@types/js-yaml` — parse YAML knowledge files
+- `@anthropic-ai/sdk` — Claude analysis
+
+### Config additions (.env)
+```
+ANTHROPIC_API_KEY=             # For Claude analysis (optional)
+WHISPER_MODEL=small            # tiny/base/small/medium/turbo
+PLAYER_QUERY=paradoks          # QW Hub player search term
+PLAYER_NAME_MAP=paradoks:ParadokS,zerohero5954:zero,fs_razor:Razor,grisling2947:grisling
+PROCESSING_AUTO=true           # Auto-run fast pipeline after recording
+PROCESSING_TRANSCRIBE=false    # Auto-run transcription (slow)
+PROCESSING_INTERMISSIONS=true  # Extract between-map discussion
+```
+
+---
+
+## Two-Stage Pipeline Design
+
+### Fast Pipeline (seconds, auto after recording)
+1. Parse session metadata
+2. Query QW Hub API for matches
+3. Pair matches + fetch ktxstats
+4. Split audio by match timestamps
+
+**Result:** Organized per-match audio directories with metadata. Usable immediately.
+
+### Slow Pipeline (hours on CPU, opt-in)
+5. Transcribe per-player segments
+6. Merge timelines + compute stats
+7. Claude analysis (optional, needs API key)
+
+**Triggers:**
+- `PROCESSING_TRANSCRIBE=true` → auto-runs slow pipeline after fast
+- `/process transcribe {session_id}` → manual trigger
+- `/process analyze {session_id}` → analysis only (needs transcripts first)
+- Default: fast auto, slow manual
+
+---
+
+## Transcription Strategy
+
+**Problem:** `faster-whisper` is Python-only. Node.js whisper bindings lack VAD + word timestamps.
+
+**Solution:**
+1. **Python script** (`scripts/transcribe.py`, ~50 lines): loads faster-whisper, transcribes directory, outputs raw JSON with word arrays. Same params: `vad_filter=True`, `min_silence_duration_ms=300`, `word_timestamps=True`, `beam_size=5`
+2. **TypeScript** (`transcriber.ts`): builds QW glossary prompt from YAML, spawns Python, reads JSON, applies re-segmentation (split on word gaps >= 800ms)
+
+---
+
+## Pitfalls
+
+| Stage | Risk | Mitigation |
+|---|---|---|
+| QW Hub API | API down | Graceful fallback to "process as single segment" |
+| Audio Splitting | OGG seeking | `-avoid_negative_ts make_zero` flag (proven) |
+| Transcription | Processing time (2-3hrs on CPU) | Must run async, don't block bot |
+| Transcription | Model download (~500MB) | Pre-download in Docker build |
+| Claude Analysis | API key required | Make optional — pipeline works without it |
+| Claude Analysis | Token cost (~$0.10/map) | Document cost, make opt-in |
+
+---
+
+## Output Structure
+
+```
+recordings/{session_id}/
+├── session_metadata.json          # From recording (exists)
+├── 1-paradoks.ogg                 # Raw recordings (exist)
+└── processed/                     # NEW
+    ├── pipeline_status.json
+    ├── 01_dm3_sr_vs_red/
+    │   ├── metadata.json
+    │   ├── audio/  (split per-player segments)
+    │   ├── transcripts/  (per-player + merged + stats)
+    │   └── analysis/  (report.md + meta.json)
+    └── 02_dm2_sr_vs_red/
+```
+
+---
+
+## Implementation Phases
+
+### Phase P1: Scaffold + Types + Config + Knowledge ⬜
+- Create `src/modules/processing/` directory structure
+- Define TypeScript interfaces in `types.ts`
+- Extend `config.ts` with new env vars
+- Copy YAML knowledge files from voice-analysis
+- Add `js-yaml` and `@anthropic-ai/sdk` to package.json
+- Create `utils.ts` (YAML loader, player name resolution, whisper prompt builder)
+- Create module skeleton in `index.ts`
+- **Verify:** `npx tsc --noEmit` passes
+
+### Phase P2: Hub Client + Match Pairer ⬜
+- Port `qwhub_client.py` → `stages/hub-client.ts`
+- Port `match_pairer.py` → `stages/match-pairer.ts`
+- **Verify:** Test against live QW Hub API with test session timestamps
+
+### Phase P3: Audio Splitter ⬜
+- Port `timestamp_splitter.py` → `stages/audio-splitter.ts` (incl. intermission extraction)
+- **Verify:** Split test recording, compare durations with Python output
+
+### Phase P4: Transcriber ⬜
+- Write `scripts/transcribe.py` (thin Python wrapper)
+- Port re-segmentation + prompt builder → `stages/transcriber.ts`
+- **Verify:** Transcribe one split segment, compare with Python output
+
+### Phase P5: Timeline Merger ⬜
+- Port `timeline_merger.py` → `stages/timeline-merger.ts`
+- **Verify:** Compare merged timeline, overlaps, stats
+
+### Phase P6: Claude Analyzer ⬜
+- Port `analyzer.py` → `stages/analyzer.ts`
+- Port all prompt construction (map context, ktxstats, report template)
+- **Verify:** Run analysis on one segment
+
+### Phase P7: Pipeline Orchestrator + Commands ⬜
+- Build `pipeline.ts` — two-stage (fast auto + slow opt-in), status tracking
+- Build `/process` command (status, transcribe, analyze, rerun)
+- Wire auto-trigger from recording module
+- Background execution
+- **Verify:** End-to-end test on test recording
+
+### Phase P8: Docker ⬜
+- Update Dockerfile: add Python, faster-whisper, ffmpeg, pre-download model
+- **Verify:** `docker build` + `docker run` → record + process works
+
+### Parallelization Note
+- Phase P1 is foundational — must complete first
+- Phases P2-P6 are independent — can run in parallel (agent teams or Task subagents)
+- Phase P7 wires everything together — needs P2-P6 complete
+- Phase P8 is final integration
+
+---
+
+## Key Files to Modify
+
+| File | Change |
+|---|---|
+| `src/core/config.ts` | Add processing env vars |
+| `src/index.ts` | Register `processingModule` |
+| `src/modules/recording/commands/record.ts` | Trigger processing after stop |
+| `package.json` | Add `js-yaml`, `@anthropic-ai/sdk` |
+| `Dockerfile` | Add Python + faster-whisper + ffmpeg |
+| `.env.example` | Add processing config vars |
+
+---
+
+## Verification
+
+**Test session:** `recordings/2e823379-d61a-4283-ac8a-908f4faf5121/` (1.5hr, 4 players, 54MB)
+
+Compare TypeScript pipeline output with Python pipeline output on the same session:
+1. Match pairing results (same matches, same confidence)
+2. Split audio durations (within 1s)
+3. Transcript quality (similar segments, same vocabulary)
+4. Analysis report structure

@@ -1,4 +1,4 @@
-import { createWriteStream, type WriteStream } from 'node:fs';
+import { createWriteStream, statSync, type WriteStream } from 'node:fs';
 import { type Readable } from 'node:stream';
 import { once } from 'node:events';
 import prism from 'prism-media';
@@ -211,7 +211,18 @@ export class UserTrack {
       await once(this.fileStream, 'finish');
     }
 
-    logger.info(`Track ${this.trackNumber} stopped: ${this.audioFile}`, {
+    // Log file size
+    let fileSize = '';
+    try {
+      const stats = statSync(this.filePath);
+      const kb = (stats.size / 1024).toFixed(0);
+      const mb = (stats.size / (1024 * 1024)).toFixed(1);
+      fileSize = stats.size > 1024 * 1024 ? `${mb} MB` : `${kb} KB`;
+    } catch {
+      // File may not exist if track failed early
+    }
+
+    logger.info(`Track ${this.trackNumber} stopped: ${this.audioFile}${fileSize ? ` (${fileSize})` : ''}`, {
       username: this.username,
       userId: this.userId,
     });

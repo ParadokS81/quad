@@ -1,12 +1,20 @@
 import { loadConfig } from './core/config.js';
 import { setLogLevel, logger } from './core/logger.js';
 import { start, shutdown } from './core/bot.js';
+import { setRecordingStatusProvider } from './core/health.js';
 import { recordingModule } from './modules/recording/index.js';
+import { isRecording, getActiveSession } from './modules/recording/commands/record.js';
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
 
 logger.info('Starting Quad', { version: '1.0.0' });
+
+// Provide recording status to health endpoint
+setRecordingStatusProvider(() => ({
+  active: isRecording(),
+  sessionId: getActiveSession()?.sessionId ?? null,
+}));
 
 // Prevent crashes from unhandled promises and exceptions
 process.on('unhandledRejection', (reason) => {
