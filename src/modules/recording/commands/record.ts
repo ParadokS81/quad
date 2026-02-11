@@ -27,6 +27,18 @@ export const recordCommand = new SlashCommandBuilder()
 // Module-level state
 let activeSession: RecordingSession | null = null;
 
+// Post-recording callbacks (e.g., auto-trigger processing pipeline)
+type RecordingStopCallback = (sessionDir: string, sessionId: string) => void;
+const onStopCallbacks: RecordingStopCallback[] = [];
+
+/**
+ * Register a callback to fire after a recording session stops successfully.
+ * Used by the processing module to auto-trigger the fast pipeline.
+ */
+export function onRecordingStop(callback: RecordingStopCallback): void {
+  onStopCallbacks.push(callback);
+}
+
 export function isRecording(): boolean {
   return activeSession !== null;
 }
@@ -240,4 +252,17 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
   }
 
   logger.info('Recording stopped', { sessionId, trackCount: summary?.trackCount });
+
+  // Fire post-recording callbacks (e.g., auto-trigger processing)
+  if (summary) {
+    for (const cb of onStopCallbacks) {
+      try {
+        cb(summary.outputDir, summary.sessionId);
+      } catch (err) {
+        logger.error('Post-recording callback failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
 }

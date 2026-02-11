@@ -20,6 +20,8 @@ export class UserTrack {
   private opusStream: Readable | null = null;
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private lastPacketTime = 0;
+  private framesWritten = 0;
+  private trackStartTime = 0;
   private recordingStartTime: Date;
   private failed = false;
 
@@ -91,16 +93,21 @@ export class UserTrack {
       for (let i = 0; i < silentFrames; i++) {
         this.oggStream.write(SILENT_OPUS_FRAME);
       }
+      this.framesWritten += silentFrames;
       logger.debug(`Track ${this.trackNumber} prepended ${silentFrames} silent frames (${gapMs}ms gap)`, {
         username: this.username,
       });
     }
+
+    // Track start time = recording start (frames are counted from here)
+    this.trackStartTime = this.recordingStartTime.getTime();
 
     // Listen for real packets and write them to OGG
     this.lastPacketTime = Date.now();
     opusStream.on('data', (packet: Buffer) => {
       if (this.failed) return;
       this.lastPacketTime = Date.now();
+      this.framesWritten++;
       this.oggStream.write(packet);
     });
 
@@ -111,13 +118,22 @@ export class UserTrack {
       });
     });
 
-    // Silence timer: fill gaps when user isn't talking
+    // Silence timer: catch up to wall clock time on each tick.
+    // Instead of writing one frame per tick (which drifts with setInterval jitter),
+    // we calculate how many frames SHOULD exist by now and write however many are missing.
     this.silenceTimer = setInterval(() => {
       if (this.failed) return;
       const elapsed = Date.now() - this.lastPacketTime;
-      if (elapsed >= FRAME_DURATION_MS) {
+      if (elapsed < FRAME_DURATION_MS) return; // user is actively talking
+
+      const totalElapsedMs = Date.now() - this.trackStartTime;
+      const expectedFrames = Math.floor(totalElapsedMs / FRAME_DURATION_MS);
+      const deficit = expectedFrames - this.framesWritten;
+
+      for (let i = 0; i < deficit; i++) {
         this.oggStream.write(SILENT_OPUS_FRAME);
       }
+      this.framesWritten += deficit;
     }, FRAME_DURATION_MS);
 
     logger.debug(`Track ${this.trackNumber} started with silence padding`, {
