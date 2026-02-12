@@ -4,6 +4,7 @@ import { start, shutdown } from './core/bot.js';
 import { setRecordingStatusProvider } from './core/health.js';
 import { recordingModule } from './modules/recording/index.js';
 import { processingModule } from './modules/processing/index.js';
+import { standinModule } from './modules/standin/index.js';
 import { isRecording, getActiveSession } from './modules/recording/commands/record.js';
 
 const config = loadConfig();
@@ -49,7 +50,7 @@ process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 // Start with all modules
-start(config, [recordingModule, processingModule]).catch((err) => {
+start(config, [recordingModule, processingModule, standinModule]).catch((err) => {
   logger.error('Failed to start bot', {
     error: err instanceof Error ? err.message : String(err),
   });
