@@ -1,4 +1,5 @@
 import { Client, ChatInputCommandInteraction, Events } from 'discord.js';
+import { getVoiceConnection } from '@discordjs/voice';
 import { type BotModule } from '../../core/module.js';
 import { logger } from '../../core/logger.js';
 import {
@@ -52,7 +53,15 @@ export const recordingModule: BotModule = {
     });
   },
 
-  async onReady(_client: Client): Promise<void> {
+  async onReady(client: Client): Promise<void> {
+    // Clean up any stale voice connections from a previous session (e.g., after restart)
+    for (const guild of client.guilds.cache.values()) {
+      const connection = getVoiceConnection(guild.id);
+      if (connection) {
+        logger.warn('Cleaning up stale voice connection on startup', { guild: guild.name, guildId: guild.id });
+        connection.destroy();
+      }
+    }
     logger.info('Recording module loaded');
   },
 
