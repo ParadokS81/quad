@@ -9,8 +9,9 @@ The first module is **voice recording** — per-speaker audio capture that repla
 ## Purpose
 
 A single community bot that QW teams self-host via Docker:
-- **Recording** (v1): Per-speaker OGG/Opus voice capture → local filesystem → [voice-analysis](../voice-analysis/) pipeline
-- **Scheduler** (future): Integration with QW match scheduler websites (upcoming matches, reminders, auto-record)
+- **Recording**: Per-speaker OGG/Opus voice capture → local filesystem
+- **Processing**: Auto-pipeline after recording — match detection via QW Hub, per-map audio splitting, optional transcription
+- **Standin**: Firestore-based DM feedback loop for MatchScheduler's "Find standin" feature (skips if Firebase not configured)
 - **Feeds** (future): Community announcements, match results, Hub integration
 
 ### Recording Module — Specific Goals
@@ -217,42 +218,53 @@ Environment variables (Docker-friendly):
 
 ```
 quad/
-├── CLAUDE.md              # This file
+├── CLAUDE.md              # This file — codebase instructions
+├── DEPLOYMENT.md          # Server access, deploy workflow, troubleshooting
 ├── PLAN.md                # Implementation plan
 ├── package.json
 ├── tsconfig.json
-├── Dockerfile
-├── docker-compose.yml
+├── Dockerfile             # Multi-stage: build (tsc) + runtime (node + ffmpeg + whisper)
+├── docker-compose.yml     # Production config with GPU reservation
 ├── .env.example
 ├── docs/
-│   └── session_metadata_schema.json
+│   ├── session_metadata_schema.json
+│   └── standin-flow/
+│       └── design.md      # Standin feature design (shared contract with MatchScheduler)
+├── scripts/
+│   └── transcribe.py      # Whisper transcription script (called by processing module)
 ├── src/
 │   ├── index.ts           # Entry point — bootstrap and start
 │   ├── core/
 │   │   ├── bot.ts         # Discord client setup, module loader, command router
 │   │   ├── config.ts      # Environment variable parsing
+│   │   ├── health.ts      # HTTP health endpoint
 │   │   ├── logger.ts      # Structured logging
 │   │   └── module.ts      # BotModule interface definition
 │   ├── modules/
-│   │   └── recording/     # Voice recording module (v1)
-│   │       ├── index.ts   # Module entry — exports commands, events, lifecycle
-│   │       ├── commands/
-│   │       │   └── record.ts  # /record start|stop handler
-│   │       ├── session.ts     # RecordingSession class — manages one recording
-│   │       ├── track.ts       # UserTrack class — per-user OGG stream
-│   │       ├── silence.ts     # Silent Opus frame generation
-│   │       └── metadata.ts    # session_metadata.json writer
+│   │   ├── recording/     # Voice recording module
+│   │   │   ├── index.ts   # Module entry — exports commands, events, lifecycle
+│   │   │   ├── commands/
+│   │   │   │   └── record.ts  # /record start|stop handler
+│   │   │   ├── session.ts     # RecordingSession class — manages one recording
+│   │   │   ├── track.ts       # UserTrack class — per-user OGG stream
+│   │   │   ├── silence.ts     # Silent Opus frame generation
+│   │   │   └── metadata.ts    # session_metadata.json writer
+│   │   ├── processing/    # Auto-processing pipeline (match detection, audio splitting)
+│   │   │   ├── index.ts
+│   │   │   ├── pipeline.ts    # Pipeline orchestrator (fast + full modes)
+│   │   │   ├── commands/
+│   │   │   │   └── process.ts # /process command
+│   │   │   ├── stages/        # Pipeline stages (hub-query, match-pairer, audio-splitter, etc.)
+│   │   │   └── knowledge/     # QW map/team knowledge YAMLs (runtime, not compiled)
+│   │   └── standin/       # Find standin DM feedback loop (Firestore-based)
+│   │       ├── index.ts   # Module entry — event-driven, no slash commands
+│   │       ├── types.ts   # Firestore schema types
+│   │       ├── firestore.ts   # Firebase Admin SDK init
+│   │       ├── listener.ts    # onSnapshot listener for standin requests
+│   │       ├── dm.ts          # Discord embed + button builders
+│   │       └── interactions.ts # Button click handlers
 │   └── shared/            # Utilities used across multiple modules
-│       └── ...
-└── recordings/            # Default output dir (gitignored)
-```
-
-Future modules slot in cleanly:
-```
-│   ├── modules/
-│   │   ├── recording/     # Voice recording
-│   │   ├── scheduler/     # Match scheduler integration
-│   │   └── feeds/         # Community feeds + Hub integration
+└── recordings/            # Default output dir (gitignored, volume-mounted in Docker)
 ```
 
 ## Downstream Consumer: voice-analysis Pipeline
@@ -313,37 +325,80 @@ CRC checksums require `node-crc@^1.3.2` (must be v1, CJS — v3+ is ESM-only and
 
 ## Deployment — Xerial's Server
 
+Full reference: see `DEPLOYMENT.md` in repo root.
+
 ### Server Details
 - **Host**: `83.172.66.214`, port `5555`
 - **User**: `qwvoice`
 - **SSH key**: `~/.ssh/qwvoice_key`
-- **GPU**: NVIDIA RTX 4090 (24GB VRAM) — transcription is fast
-- **Existing service**: `qwvoice-whisper` container already running at `/srv/qwvoice/docker/`
+- **GPU**: NVIDIA RTX 4090 (24GB VRAM) — GPU-accelerated whisper with `device="auto"`
+- **Quad repo**: `/srv/qwvoice/quad/` (owned by `qwvoice`)
+- **Recordings**: `/srv/qwvoice/quad/recordings/` (volume-mounted, survives rebuilds)
+- **Other services**: `qwvoice-whisper` + `ollama` at `/srv/qwvoice/docker/` (independent)
 
-### SSH Access (restricted shell)
+### SSH Access (full bash shell)
 ```bash
 ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214
 ```
 
-Allowed commands: `up`, `down`, `restart`, `logs`, `ps`, `exec [cmd...]`
-
-Cannot: `docker build`, `scp`, run arbitrary shell commands. Xerial manages the Docker compose config on his end.
-
-### SCP (file transfer)
+**Important**: Use `wsl bash -c` (NOT `-ic`) for SSH commands from the Windows/WSL environment:
 ```bash
-scp -i ~/.ssh/qwvoice_key -P 5555 file qwvoice@83.172.66.214:/srv/qwvoice/data/input/
+wsl bash -c "ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214 'command here'"
 ```
 
-### Update Workflow
-1. Develop + test locally (compile with `/build`, test with `/dev`)
-2. Commit and push to git
-3. Ask Xerial (or his Claude) to `git pull && docker compose up -d --build`
-4. Recordings persist across rebuilds (volume-mounted, not inside the container)
+### Sudo Permissions (NOPASSWD)
+```bash
+sudo docker compose *              # Full compose control (up, down, logs, ps, exec, build)
+sudo docker images                 # List images
+sudo docker image prune -f         # Clean up dangling images
+```
+
+The `qwvoice` user is NOT in the `docker` group — all docker commands require `sudo`.
+
+### Deploy Workflow (self-service, no Xerial needed)
+
+```bash
+# 1. Develop locally
+/build                    # Compile TypeScript
+/dev                      # Test with real Discord connection
+
+# 2. Commit and push
+git add ... && git commit && git push
+
+# 3. Deploy (one command)
+wsl bash -c "ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214 \
+  'cd /srv/qwvoice/quad && git pull && sudo docker compose up -d --build'"
+```
+
+Docker layer caching makes rebuilds fast (~15-30s) when only source code changed.
+
+### Common Server Operations
+```bash
+# View logs (live)
+ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml logs -f quad'
+
+# View recent logs
+ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml logs --tail=50 quad'
+
+# Check status
+ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml ps'
+
+# Restart (no rebuild — only picks up .env changes)
+ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml restart quad'
+
+# Edit .env on server
+ssh ... 'nano /srv/qwvoice/quad/.env'
+
+# Download recordings
+scp -i ~/.ssh/qwvoice_key -P 5555 -r 'qwvoice@83.172.66.214:/srv/qwvoice/quad/recordings/SESSION_ID/processed/*' /tmp/
+```
 
 ### Notes
-- Xerial runs Claude Code on his Ubuntu server — coordinate via Discord messages
-- The restricted shell is intentional (security). Don't try to bypass it.
-- RTX 4090 means GPU-accelerated whisper — use `device="auto"` (not `"cpu"`)
+- Xerial manages OS-level config (sudoers, firewall, NVIDIA drivers). Routine deploys are self-service.
+- The bot is `Quake.World#7716` on Discord
+- Recordings are volume-mounted — they persist across container rebuilds
+- The `docker-compose.yml` includes GPU reservation — container won't start without NVIDIA GPU
+- For local dev without GPU, create `docker-compose.override.yml` (gitignored)
 
 ## Development Workflow
 
