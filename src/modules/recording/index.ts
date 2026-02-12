@@ -54,13 +54,20 @@ export const recordingModule: BotModule = {
   },
 
   async onReady(client: Client): Promise<void> {
-    // Clean up any stale voice connections from a previous session (e.g., after restart)
+    // Clean up any stale voice connections from a previous session (e.g., after restart).
+    // Gateway-level: the bot may still be in a voice channel from before the restart.
     for (const guild of client.guilds.cache.values()) {
-      const connection = getVoiceConnection(guild.id);
-      if (connection) {
-        logger.warn('Cleaning up stale voice connection on startup', { guild: guild.name, guildId: guild.id });
-        connection.destroy();
+      const me = guild.members.me;
+      if (me?.voice.channelId) {
+        logger.warn('Disconnecting from stale voice channel on startup', {
+          guild: guild.name,
+          channel: me.voice.channel?.name,
+        });
+        await me.voice.disconnect().catch(() => {});
       }
+      // Also clean up @discordjs/voice internal state if any
+      const connection = getVoiceConnection(guild.id);
+      if (connection) connection.destroy();
     }
     logger.info('Recording module loaded');
   },
