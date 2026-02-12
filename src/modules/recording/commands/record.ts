@@ -6,6 +6,7 @@ import {
 } from 'discord.js';
 import {
   joinVoiceChannel,
+  getVoiceConnection,
   VoiceConnectionStatus,
   entersState,
 } from '@discordjs/voice';
@@ -119,6 +120,9 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  // Defer reply immediately — voice join can take several seconds
+  await interaction.deferReply();
+
   const config = loadConfig();
   const sessionId = randomUUID();
 
@@ -148,7 +152,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       sessionId,
     });
     activeSession = null;
-    await interaction.reply({ content: 'Failed to create recording directory.', flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: 'Failed to create recording directory.' });
     return;
   }
 
@@ -164,9 +168,14 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
   } catch {
+    // Ensure the bot fully leaves the voice channel
     connection.destroy();
+    // Belt-and-suspenders: also try getVoiceConnection in case destroy didn't clean up
+    const lingering = getVoiceConnection(interaction.guildId!);
+    if (lingering) lingering.destroy();
+
     activeSession = null;
-    await interaction.reply({ content: 'Failed to join voice channel (timeout).', flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: 'Failed to join voice channel (timeout). Please try again.' });
     return;
   }
 
@@ -189,7 +198,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   const startUnix = Math.floor(activeSession.startTime.getTime() / 1000);
   const shortId = sessionId.slice(0, 8);
 
-  await interaction.reply({
+  await interaction.editReply({
     content: [
       `\u{1F534} **Recording started**`,
       ``,
@@ -198,7 +207,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       `**Started:** <t:${startUnix}:t>`,
       `**Users in channel:** ${userCount}`,
     ].join('\n'),
-    flags: MessageFlags.Ephemeral,
   });
 
   logger.info('Recording started', {
@@ -225,7 +233,7 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
   });
 
   // Defer reply since stopping may take a moment (flushing streams)
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply();
 
   const summary = await stopRecording();
 
