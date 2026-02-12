@@ -8,14 +8,10 @@
 import { logger } from '../../../core/logger.js';
 import type { HubMatch, HubTeam, KtxStats, MatchPairing, SessionMetadata } from '../types.js';
 
-const DEFAULT_DURATION = 1200; // 20 minutes
-const DEFAULT_PADDING = 10; // seconds
-const DEFAULT_CLOCK_TOLERANCE = 5; // seconds
+const DEFAULT_MATCH_LENGTH = 1210; // 10s countdown + 20min gameplay
 const MAX_SESSION_HOURS = 4;
 
 export interface PairMatchesOptions {
-  clockToleranceSeconds?: number;
-  paddingSeconds?: number;
   defaultDuration?: number;
 }
 
@@ -25,7 +21,7 @@ export interface PairMatchesOptions {
  * @param session Recording session metadata
  * @param hubMatches Matches from QW Hub API
  * @param ktxstatsMap Map of demo_sha256 -> KtxStats
- * @param options Pairing options (padding, tolerance, default duration)
+ * @param options Pairing options (default duration)
  * @returns Pairings sorted by audio offset, trimmed for overlaps
  */
 export function pairMatches(
@@ -34,8 +30,7 @@ export function pairMatches(
   ktxstatsMap?: Map<string, KtxStats>,
   options?: PairMatchesOptions,
 ): MatchPairing[] {
-  const padding = options?.paddingSeconds ?? DEFAULT_PADDING;
-  const defaultDuration = options?.defaultDuration ?? DEFAULT_DURATION;
+  const defaultMatchLength = options?.defaultDuration ?? DEFAULT_MATCH_LENGTH;
   const statsMap = ktxstatsMap ?? new Map<string, KtxStats>();
 
   const recordingStart = new Date(session.recording_start_time);
@@ -50,19 +45,30 @@ export function pairMatches(
 
     const matchTs = new Date(matchTsStr);
 
-    // Calculate audio offset: how many seconds into the recording this match starts
-    const offset = (matchTs.getTime() - recordingStart.getTime()) / 1000;
-
     // Get ktxstats if available
     const demoSha = match.demo_sha256 ?? '';
     const ktxstats = statsMap.get(demoSha) ?? null;
-    const duration = ktxstats?.duration ?? defaultDuration;
 
-    const audioStart = offset - padding;
-    const audioEnd = offset + duration + padding;
+    // Hub timestamp = demo start (= countdown start, derived from MVD filename).
+    // ktxstats.date = match end time, ktxstats.duration = gameplay only (excl countdown).
+    // Audio should span from demo start to match end (countdown + gameplay).
+    const audioStart = (matchTs.getTime() - recordingStart.getTime()) / 1000;
+
+    let audioEnd: number;
+    let duration: number;
+    const ktxDateStr = ktxstats?.date as string | undefined;
+    if (ktxDateStr) {
+      // Exact end time from ktxstats
+      const ktxEnd = new Date(ktxDateStr.replace(' +0000', 'Z').replace(' ', 'T'));
+      audioEnd = (ktxEnd.getTime() - recordingStart.getTime()) / 1000;
+      duration = audioEnd - audioStart;
+    } else {
+      duration = defaultMatchLength;
+      audioEnd = audioStart + duration;
+    }
 
     // Score confidence
-    const { score, reasons } = scoreConfidence(match, session, offset, ktxstats !== null);
+    const { score, reasons } = scoreConfidence(match, session, audioStart, ktxstats !== null);
 
     pairings.push({
       matchId: match.id ?? 0,
