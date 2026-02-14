@@ -24,18 +24,23 @@ export function initFirestore(): Firestore {
     throw new Error('FIREBASE_SERVICE_ACCOUNT env var is required for standin module');
   }
 
-  let serviceAccount: ServiceAccount;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let rawJson: any;
 
   // Try as file path first, then as inline JSON
   if (raw.startsWith('{')) {
-    serviceAccount = JSON.parse(raw) as ServiceAccount;
+    rawJson = JSON.parse(raw);
   } else {
     const contents = readFileSync(raw, 'utf-8');
-    serviceAccount = JSON.parse(contents) as ServiceAccount;
+    rawJson = JSON.parse(contents);
   }
 
+  // Service account JSON uses snake_case (project_id), but the ServiceAccount type uses camelCase
+  const projectId = rawJson.project_id || rawJson.projectId;
+  const serviceAccount: ServiceAccount = rawJson;
+
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET
-    || `${serviceAccount.projectId}.firebasestorage.app`;
+    || `${projectId}.firebasestorage.app`;
 
   const app = initializeApp({
     credential: cert(serviceAccount),
