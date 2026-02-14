@@ -1,4 +1,4 @@
-import { Client, ChatInputCommandInteraction, Events } from 'discord.js';
+import { Client, ChatInputCommandInteraction, Events, ChannelType } from 'discord.js';
 import { getVoiceConnection } from '@discordjs/voice';
 import { type BotModule } from '../../core/module.js';
 import { logger } from '../../core/logger.js';
@@ -10,7 +10,11 @@ import {
   getRecordingGuildId,
   getActiveSession,
   stopRecording,
+  performStop,
 } from './commands/record.js';
+
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const recordingModule: BotModule = {
   name: 'recording',
@@ -40,9 +44,21 @@ export const recordingModule: BotModule = {
         const username = oldState.member?.user.username ?? userId;
         logger.info(`User left recording channel: ${username}`, { userId, channelId });
         // Don't close their track — silence timer keeps the file continuous
+
+        // Check if channel is now empty (no non-bot users) → start idle timer
+        const channel = client.channels.cache.get(channelId);
+        if (channel?.type === ChannelType.GuildVoice || channel?.type === ChannelType.GuildStageVoice) {
+          const nonBotMembers = channel.members.filter((m) => !m.user.bot).size;
+          if (nonBotMembers === 0) {
+            startIdleTimer();
+          }
+        }
       }
 
       if (joinedRecordingChannel) {
+        // Someone rejoined — cancel idle timer
+        cancelIdleTimer();
+
         const session = getActiveSession();
         if (session?.hasUser(userId)) {
           // User rejoined — reattach their opus stream to the existing track
@@ -73,9 +89,31 @@ export const recordingModule: BotModule = {
   },
 
   async onShutdown(): Promise<void> {
+    cancelIdleTimer();
     if (isRecording()) {
       await stopRecording();
     }
     logger.info('Recording module shut down');
   },
 };
+
+function startIdleTimer(): void {
+  if (idleTimer) return; // Already running
+
+  logger.info('Channel empty — auto-stop in 30 minutes if no one rejoins');
+  idleTimer = setTimeout(async () => {
+    idleTimer = null;
+    if (!isRecording()) return;
+
+    logger.info('Idle timeout reached (30m) — auto-stopping recording');
+    await performStop('idle timeout (channel empty for 30 minutes)');
+  }, IDLE_TIMEOUT_MS);
+}
+
+function cancelIdleTimer(): void {
+  if (!idleTimer) return;
+
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  logger.info('Idle timer cancelled — user rejoined');
+}

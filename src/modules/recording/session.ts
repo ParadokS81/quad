@@ -11,14 +11,14 @@ export interface SessionSummary {
   channelId: string;
   trackCount: number;
   tracks: TrackMetadata[];
-  startTime: Date;
+  readonly startTime: Date;
   endTime: Date;
 }
 
 export class RecordingSession {
   readonly sessionId: string;
   readonly outputDir: string;
-  readonly startTime: Date;
+  startTime: Date;
   readonly guildId: string;
   readonly guildName: string;
   readonly channelId: string;

@@ -73,6 +73,36 @@ export async function stopRecording(): Promise<SessionSummary | null> {
   }
 }
 
+/**
+ * Stop recording and fire post-recording callbacks. Used by both /record stop and idle auto-stop.
+ * Returns the session summary (or null if no active session).
+ */
+export async function performStop(reason: string): Promise<SessionSummary | null> {
+  if (!activeSession) return null;
+
+  const sessionId = activeSession.sessionId;
+  logger.info(`Recording stop: ${reason}`, { sessionId });
+
+  const summary = await stopRecording();
+  logger.info('Recording stopped', { sessionId, reason, trackCount: summary?.trackCount });
+
+  fireStopCallbacks(summary);
+  return summary;
+}
+
+function fireStopCallbacks(summary: SessionSummary | null): void {
+  if (!summary) return;
+  for (const cb of onStopCallbacks) {
+    try {
+      cb(summary.outputDir, summary.sessionId);
+    } catch (err) {
+      logger.error('Post-recording callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -232,45 +262,44 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
     sessionId,
   });
 
-  // Defer reply since stopping may take a moment (flushing streams)
-  await interaction.deferReply();
-
+  // CRITICAL: Stop the recording FIRST, then try to reply.
+  // If deferReply/editReply fail (Discord API hiccup), the recording is still saved.
   const summary = await stopRecording();
 
-  if (summary) {
-    const durationSec = Math.round((summary.endTime.getTime() - summary.startTime.getTime()) / 1000);
-    const duration = formatDuration(durationSec);
-    const shortId = summary.sessionId.slice(0, 8);
-    const trackList = summary.tracks.map((t) => `${t.track_number}. ${t.discord_display_name}`).join('\n');
+  // Best-effort reply to the interaction — never let a Discord API error undo the stop
+  try {
+    await interaction.deferReply();
 
-    await interaction.editReply({
-      content: [
-        `\u2B1B **Recording ended**`,
-        ``,
-        `**Channel:** <#${summary.channelId}>`,
-        `**Recording ID:** \`${shortId}\``,
-        `**Duration:** ${duration}`,
-        `**Tracks:** ${summary.trackCount}`,
-        ``,
-        trackList,
-      ].join('\n'),
+    if (summary) {
+      const durationSec = Math.round((summary.endTime.getTime() - summary.startTime.getTime()) / 1000);
+      const duration = formatDuration(durationSec);
+      const shortId = summary.sessionId.slice(0, 8);
+      const trackList = summary.tracks.map((t) => `${t.track_number}. ${t.discord_display_name}`).join('\n');
+
+      await interaction.editReply({
+        content: [
+          `\u2B1B **Recording ended**`,
+          ``,
+          `**Channel:** <#${summary.channelId}>`,
+          `**Recording ID:** \`${shortId}\``,
+          `**Duration:** ${duration}`,
+          `**Tracks:** ${summary.trackCount}`,
+          ``,
+          trackList,
+        ].join('\n'),
+      });
+    } else {
+      await interaction.editReply({ content: 'Recording stopped.' });
+    }
+  } catch (err) {
+    logger.warn('Could not reply to stop interaction — recording was still saved', {
+      error: err instanceof Error ? err.message : String(err),
+      sessionId,
     });
-  } else {
-    await interaction.editReply({ content: 'Recording stopped.' });
   }
 
   logger.info('Recording stopped', { sessionId, trackCount: summary?.trackCount });
 
   // Fire post-recording callbacks (e.g., auto-trigger processing)
-  if (summary) {
-    for (const cb of onStopCallbacks) {
-      try {
-        cb(summary.outputDir, summary.sessionId);
-      } catch (err) {
-        logger.error('Post-recording callback failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
+  fireStopCallbacks(summary);
 }
