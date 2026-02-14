@@ -3,6 +3,7 @@ services:
     build: .
     volumes:
       - ./recordings:/app/recordings
+      - ./service-account.json:/app/service-account.json:ro
     env_file: .env
     restart: unless-stopped
     ports:
