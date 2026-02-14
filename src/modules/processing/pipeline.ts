@@ -248,6 +248,22 @@ export async function runFastPipeline(
     });
     await writeStatus(processedDir, status);
 
+    // Upload voice recordings to Firebase Storage (best-effort, non-fatal)
+    if (segments.length > 0) {
+      try {
+        const { uploadVoiceRecordings } = await import('./stages/voice-uploader.js');
+        const teamTag = session.team?.tag || '';
+        const uploadResult = await uploadVoiceRecordings(segments, teamTag);
+        if (uploadResult.uploaded > 0) {
+          logger.info('Voice recordings uploaded to Firebase', { ...uploadResult });
+        }
+      } catch (err) {
+        logger.warn('Voice upload failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     logger.info('Fast pipeline complete', {
       sessionId,
       matches: pairings.length,

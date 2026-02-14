@@ -9,10 +9,12 @@
 
 import { initializeApp, cert, type ServiceAccount } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 import { readFileSync } from 'node:fs';
 import { logger } from '../../core/logger.js';
 
 let db: Firestore | null = null;
+let storageBucket: ReturnType<ReturnType<typeof getStorage>['bucket']> | null = null;
 
 export function initFirestore(): Firestore {
   if (db) return db;
@@ -32,12 +34,17 @@ export function initFirestore(): Firestore {
     serviceAccount = JSON.parse(contents) as ServiceAccount;
   }
 
+  const bucketName = process.env.FIREBASE_STORAGE_BUCKET
+    || `${serviceAccount.projectId}.firebasestorage.app`;
+
   const app = initializeApp({
     credential: cert(serviceAccount),
+    storageBucket: bucketName,
   }, 'standin'); // named app to avoid conflicts if other modules use firebase-admin
 
   db = getFirestore(app);
-  logger.info('Firebase Admin initialized for standin module');
+  storageBucket = getStorage(app).bucket();
+  logger.info('Firebase Admin initialized (Firestore + Storage)', { bucket: bucketName });
 
   return db;
 }
@@ -47,4 +54,9 @@ export function getDb(): Firestore {
     throw new Error('Firestore not initialized — call initFirestore() first');
   }
   return db;
+}
+
+/** Returns the Storage bucket, or null if Firebase not initialized. */
+export function getBucket(): typeof storageBucket {
+  return storageBucket;
 }
