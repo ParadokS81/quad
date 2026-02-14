@@ -16,6 +16,8 @@ import type {
   SegmentPlayer,
   SessionMetadata,
   SessionTrack,
+  SkippedTrack,
+  VolumeStats,
 } from '../types.js';
 import { resolvePlayerName } from '../utils.js';
 
@@ -71,6 +73,30 @@ export async function ffmpegSlice(
 
   return ffprobeDuration(outputPath);
 }
+
+/**
+ * Analyze audio volume using ffmpeg's volumedetect filter.
+ * Used to identify silent/muted tracks before splitting.
+ */
+export async function ffmpegVolumeDetect(audioPath: string): Promise<VolumeStats> {
+  const { stderr } = await execFileAsync('ffmpeg', [
+    '-i', audioPath,
+    '-af', 'volumedetect',
+    '-f', 'null',
+    '-',
+  ]);
+
+  const meanMatch = stderr.match(/mean_volume:\s*([-\d.]+)\s*dB/);
+  const maxMatch = stderr.match(/max_volume:\s*([-\d.]+)\s*dB/);
+
+  return {
+    meanVolume: meanMatch ? parseFloat(meanMatch[1]) : -Infinity,
+    maxVolume: maxMatch ? parseFloat(maxMatch[1]) : -Infinity,
+  };
+}
+
+/** Tracks where the loudest moment is below this are considered silent. */
+const SILENCE_MAX_VOLUME_DB = -50;
 
 // ============================================================
 // Utility functions
@@ -157,6 +183,29 @@ export async function splitByTimestamps(
     }
   }
 
+  // Probe volume levels, mark silent tracks
+  const silentTracks = new Map<number, SkippedTrack>();
+  for (const track of session.tracks) {
+    if (!trackDurations.has(track.track_number)) continue;
+    const audioPath = join(recordingDir, track.audio_file);
+    try {
+      const stats = await ffmpegVolumeDetect(audioPath);
+      if (stats.maxVolume < SILENCE_MAX_VOLUME_DB) {
+        silentTracks.set(track.track_number, {
+          discordUserId: track.discord_user_id,
+          discordUsername: track.discord_username,
+          reason: 'silent',
+          maxVolumeDb: stats.maxVolume,
+        });
+        logger.info(
+          `Track ${track.discord_username} is silent (max: ${stats.maxVolume}dB), skipping`,
+        );
+      }
+    } catch (err) {
+      logger.debug(`Volume detect failed for track ${track.track_number} (non-fatal): ${err}`);
+    }
+  }
+
   for (let idx = 0; idx < pairings.length; idx++) {
     const pairing = pairings[idx];
     const dirName = buildDirName(pairing, idx);
@@ -168,6 +217,8 @@ export async function splitByTimestamps(
     const players: SegmentPlayer[] = [];
 
     for (const track of session.tracks) {
+      if (silentTracks.has(track.track_number)) continue;
+
       const audioPath = join(recordingDir, track.audio_file);
       const trackDuration = trackDurations.get(track.track_number);
 
@@ -206,11 +257,15 @@ export async function splitByTimestamps(
 
       players.push({
         name: playerName,
+        discordUserId: track.discord_user_id,
         discordUsername: track.discord_username,
         audioFile: outPath,
         duration: actualDuration,
       });
     }
+
+    // Collect skipped tracks relevant to this segment
+    const skippedForSegment = [...silentTracks.values()];
 
     const segment: SegmentMetadata = {
       index: idx,
@@ -233,6 +288,7 @@ export async function splitByTimestamps(
         confidenceReasons: pairing.confidenceReasons,
       },
       ktxstats: pairing.ktxstats,
+      ...(skippedForSegment.length > 0 && { skippedTracks: skippedForSegment }),
     };
     segments.push(segment);
 
@@ -382,6 +438,7 @@ export async function extractIntermissions(
 
       players.push({
         name: playerName,
+        discordUserId: track.discord_user_id,
         discordUsername: track.discord_username,
         audioFile: outPath,
         duration: actualDuration,

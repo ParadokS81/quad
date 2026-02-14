@@ -135,13 +135,29 @@ export interface SegmentMetadata {
   isIntermission?: boolean;
   label?: string;
   duration?: number;
+  skippedTracks?: SkippedTrack[];
 }
 
 export interface SegmentPlayer {
   name: string;
+  discordUserId: string;
   discordUsername: string;
   audioFile: string;
   duration: number;
+}
+
+/** Volume analysis result from ffmpeg volumedetect. */
+export interface VolumeStats {
+  meanVolume: number; // dB (e.g., -91.0 for silence, -25.0 for normal speech)
+  maxVolume: number;  // dB (e.g., -91.0 for silence, -5.0 for normal speech)
+}
+
+/** Track skipped during pipeline processing. */
+export interface SkippedTrack {
+  discordUserId: string;
+  discordUsername: string;
+  reason: 'silent';
+  maxVolumeDb: number;
 }
 
 // ============================================================

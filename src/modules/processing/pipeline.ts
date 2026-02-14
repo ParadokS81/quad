@@ -253,7 +253,8 @@ export async function runFastPipeline(
       try {
         const { uploadVoiceRecordings } = await import('./stages/voice-uploader.js');
         const teamTag = session.team?.tag || '';
-        const uploadResult = await uploadVoiceRecordings(segments, teamTag);
+        const guildId = session.guild.id;
+        const uploadResult = await uploadVoiceRecordings(segments, teamTag, guildId);
         if (uploadResult.uploaded > 0) {
           logger.info('Voice recordings uploaded to Firebase', { ...uploadResult });
         }
