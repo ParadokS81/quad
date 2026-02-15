@@ -134,8 +134,9 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
     return [
       `Missing permissions in <#${channel.id}>: ${missing.join(', ')}`,
       '',
-      'To fix: **Server Settings** → **Roles** → find the bot\'s role → enable the missing permissions.',
-      'Or right-click the voice channel → **Edit Channel** → **Permissions** → add the bot with Connect access.',
+      'The bot needs these voice channel permissions: **View Channel**, **Connect**',
+      '',
+      'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel** and **Connect**.',
     ].join('\n');
   }
 
@@ -266,13 +267,14 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
     await interaction.editReply({
       content: [
-        'Failed to join voice channel (timeout). Common causes:',
+        'Failed to join voice channel (timeout). The bot needs these permissions on this voice channel:',
         '',
-        '1. **Missing permissions** — the bot needs **Connect** on this voice channel',
-        '2. **Channel restrictions** — check if the channel has role or permission overrides blocking the bot',
-        '3. **Region issues** — if the voice channel has a region override, try resetting it to Automatic',
+        '• **View Channel** — so it can see the channel',
+        '• **Connect** — so it can join the channel',
         '',
-        'To check: right-click the voice channel → **Edit Channel** → **Permissions** → make sure the bot\'s role has **Connect**.',
+        'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel** and **Connect**.',
+        '',
+        'If permissions look correct, also check for channel-level overrides that might be blocking the bot\'s role.',
       ].join('\n'),
     });
     return;
