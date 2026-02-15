@@ -121,14 +121,14 @@ export class UserTrack {
     // Silence timer: catch up to wall clock time on each tick.
     // Instead of writing one frame per tick (which drifts with setInterval jitter),
     // we calculate how many frames SHOULD exist by now and write however many are missing.
+    // Runs unconditionally — during speech, deficit is typically 0 (real packets keep up).
+    // During silence, deficit grows and gets filled with silent frames.
     this.silenceTimer = setInterval(() => {
       if (this.failed) return;
-      const elapsed = Date.now() - this.lastPacketTime;
-      if (elapsed < FRAME_DURATION_MS) return; // user is actively talking
 
       const totalElapsedMs = Date.now() - this.trackStartTime;
       const expectedFrames = Math.floor(totalElapsedMs / FRAME_DURATION_MS);
-      const deficit = expectedFrames - this.framesWritten;
+      const deficit = Math.max(0, expectedFrames - this.framesWritten);
 
       for (let i = 0; i < deficit; i++) {
         this.oggStream.write(SILENT_OPUS_FRAME);
@@ -157,6 +157,7 @@ export class UserTrack {
     opusStream.on('data', (packet: Buffer) => {
       if (this.failed) return;
       this.lastPacketTime = Date.now();
+      this.framesWritten++;
       this.oggStream.write(packet);
     });
 
