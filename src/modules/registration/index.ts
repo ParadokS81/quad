@@ -10,6 +10,7 @@ import { type BotModule } from '../../core/module.js';
 import { logger } from '../../core/logger.js';
 import { initFirestore } from '../standin/firestore.js';
 import { handleRegister } from './register.js';
+import { startDisconnectListener, stopDisconnectListener } from './disconnect-listener.js';
 
 export { getRegistrationForGuild, type BotRegistration } from './register.js';
 
@@ -40,20 +41,25 @@ export const registrationModule: BotModule = {
     // No event listeners needed
   },
 
-  async onReady(_client: Client): Promise<void> {
+  async onReady(client: Client): Promise<void> {
     if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
       logger.info('Registration module skipped — FIREBASE_SERVICE_ACCOUNT not set');
       return;
     }
 
     try {
-      initFirestore(); // Idempotent — reuses existing instance if standin already initialized
+      const db = initFirestore(); // Idempotent — reuses existing instance if standin already initialized
       firestoreReady = true;
+      startDisconnectListener(db, client);
       logger.info('Registration module loaded');
     } catch (err) {
       logger.error('Failed to initialize registration module', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  },
+
+  async onShutdown(): Promise<void> {
+    stopDisconnectListener();
   },
 };

@@ -72,13 +72,23 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
   }
 
   // Find a pending registration for this user
-  const pendingSnap = await db.collection('botRegistrations')
-    .where('authorizedDiscordUserId', '==', userId)
-    .where('status', '==', 'pending')
-    .limit(1)
-    .get();
+  // Support both new array field (authorizedDiscordUserIds) and old single field (authorizedDiscordUserId)
+  const [arraySnap, singleSnap] = await Promise.all([
+    db.collection('botRegistrations')
+      .where('authorizedDiscordUserIds', 'array-contains', userId)
+      .where('status', '==', 'pending')
+      .limit(1)
+      .get(),
+    db.collection('botRegistrations')
+      .where('authorizedDiscordUserId', '==', userId)
+      .where('status', '==', 'pending')
+      .limit(1)
+      .get(),
+  ]);
 
-  if (pendingSnap.empty) {
+  const pendingDoc = arraySnap.docs[0] || singleSnap.docs[0];
+
+  if (!pendingDoc) {
     await interaction.reply({
       content: `No pending registration found. Start the setup from your team settings on MatchScheduler: ${SCHEDULER_URL}`,
       flags: MessageFlags.Ephemeral,
@@ -86,7 +96,7 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     return;
   }
 
-  const doc = pendingSnap.docs[0];
+  const doc = pendingDoc;
   const data = doc.data();
   const guild = interaction.guild;
   const guildName = guild?.name || 'Unknown';
