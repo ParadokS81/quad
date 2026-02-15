@@ -58,8 +58,11 @@ export async function start(config: Config, modules: BotModule[]): Promise<void>
 
   // Login
   client.once(Events.ClientReady, async (readyClient) => {
+    const guilds = readyClient.guilds.cache.map((g) => ({ id: g.id, name: g.name, memberCount: g.memberCount }));
     logger.info(`Bot online as ${readyClient.user.tag}`, {
       modules: modules.map((m) => m.name),
+      guildCount: guilds.length,
+      guilds,
     });
 
     // Register slash commands with Discord
