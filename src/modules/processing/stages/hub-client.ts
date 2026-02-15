@@ -15,7 +15,7 @@ const SUPABASE_ANON_KEY =
 const KTXSTATS_BASE_URL = 'https://d.quake.world';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_SESSION_BUFFER_MINUTES = 15;
+const DEFAULT_SESSION_BUFFER_MINUTES = 2;
 
 export interface HubClientConfig {
   supabaseUrl?: string;

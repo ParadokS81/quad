@@ -10,18 +10,30 @@ import type { HubMatch, HubTeam, KtxStats, MatchPairing, SessionMetadata } from 
 
 const DEFAULT_MATCH_LENGTH = 1210; // 10s countdown + 20min gameplay
 const MAX_SESSION_HOURS = 4;
+const MIN_PLAYER_OVERLAP = 2; // Minimum QW player names that must match for a "mix" game
 
 export interface PairMatchesOptions {
   defaultDuration?: number;
+  /** Team tag to filter matches (e.g., "]sr["). Primary filter. */
+  teamTag?: string;
+  /** Discord ID → QW name mapping from bot registration. Used for player-based filtering. */
+  knownPlayers?: Record<string, string>;
 }
 
 /**
  * Pair QW Hub matches to positions in the recording.
  *
+ * Filtering strategy:
+ * 1. If teamTag or knownPlayers are provided, only keep matches where:
+ *    - A team name matches the team tag (case-insensitive), OR
+ *    - At least MIN_PLAYER_OVERLAP resolved QW names appear in the match players
+ * 2. Matches that pass neither filter are discarded (not our matches).
+ * 3. Remaining matches get precise audio offsets from timestamps.
+ *
  * @param session Recording session metadata
  * @param hubMatches Matches from QW Hub API
  * @param ktxstatsMap Map of demo_sha256 -> KtxStats
- * @param options Pairing options (default duration)
+ * @param options Pairing options (team tag, known players, default duration)
  * @returns Pairings sorted by audio offset, trimmed for overlaps
  */
 export function pairMatches(
@@ -32,11 +44,41 @@ export function pairMatches(
 ): MatchPairing[] {
   const defaultMatchLength = options?.defaultDuration ?? DEFAULT_MATCH_LENGTH;
   const statsMap = ktxstatsMap ?? new Map<string, KtxStats>();
+  const teamTag = options?.teamTag?.toLowerCase() ?? '';
+  const knownPlayers = options?.knownPlayers ?? {};
+
+  // Resolve recording tracks to QW names using knownPlayers mapping
+  const resolvedQwNames = new Set<string>();
+  for (const track of session.tracks) {
+    const qwName = knownPlayers[track.discord_user_id];
+    if (qwName) {
+      resolvedQwNames.add(qwName.toLowerCase());
+    }
+  }
+
+  if (teamTag || resolvedQwNames.size > 0) {
+    logger.info('Match filtering enabled', {
+      teamTag: teamTag || '(none)',
+      resolvedPlayers: [...resolvedQwNames],
+    });
+  } else {
+    logger.warn('No team tag or player mapping — all hub matches will be paired (unfiltered)');
+  }
+
+  // Filter hub matches to only our team's matches
+  const hasFilters = teamTag !== '' || resolvedQwNames.size > 0;
+  const filtered = hasFilters ? filterOurMatches(hubMatches, teamTag, resolvedQwNames) : hubMatches;
+
+  logger.info('Hub matches filtered', {
+    total: hubMatches.length,
+    kept: filtered.length,
+    discarded: hubMatches.length - filtered.length,
+  });
 
   const recordingStart = new Date(session.recording_start_time);
   const pairings: MatchPairing[] = [];
 
-  for (const match of hubMatches) {
+  for (const match of filtered) {
     const matchTsStr = match.timestamp;
     if (!matchTsStr) {
       logger.warn('Match has no timestamp, skipping', { matchId: match.id });
@@ -62,6 +104,18 @@ export function pairMatches(
       const ktxEnd = new Date(ktxDateStr.replace(' +0000', 'Z').replace(' ', 'T'));
       audioEnd = (ktxEnd.getTime() - recordingStart.getTime()) / 1000;
       duration = audioEnd - audioStart;
+
+      // NaN guard — if ktxstats date didn't parse, fall back to default duration
+      if (!Number.isFinite(audioEnd) || !Number.isFinite(duration) || duration <= 0) {
+        logger.warn('Invalid ktxstats date, using default duration', {
+          matchId: match.id,
+          ktxDateStr,
+          audioEnd,
+          duration,
+        });
+        duration = defaultMatchLength;
+        audioEnd = audioStart + duration;
+      }
     } else {
       duration = defaultMatchLength;
       audioEnd = audioStart + duration;
@@ -104,6 +158,43 @@ export function pairMatches(
   }
 
   return pairings;
+}
+
+/**
+ * Filter hub matches to only those belonging to our team.
+ *
+ * A match passes if:
+ * - Any team name matches the team tag (case-insensitive), OR
+ * - At least MIN_PLAYER_OVERLAP of the resolved QW names appear in the match
+ */
+function filterOurMatches(
+  hubMatches: HubMatch[],
+  teamTag: string,
+  resolvedQwNames: Set<string>,
+): HubMatch[] {
+  return hubMatches.filter((match) => {
+    // Check team tag match
+    if (teamTag) {
+      const tagMatch = (match.teams ?? []).some(
+        (t) => t.name?.toLowerCase() === teamTag,
+      );
+      if (tagMatch) return true;
+    }
+
+    // Check player name overlap
+    if (resolvedQwNames.size > 0) {
+      const matchPlayerNames = new Set(
+        (match.players ?? []).map((p) => p.name?.toLowerCase()).filter(Boolean),
+      );
+      let overlap = 0;
+      for (const name of resolvedQwNames) {
+        if (matchPlayerNames.has(name)) overlap++;
+      }
+      if (overlap >= MIN_PLAYER_OVERLAP) return true;
+    }
+
+    return false;
+  });
 }
 
 /**

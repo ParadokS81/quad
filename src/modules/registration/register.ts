@@ -4,9 +4,14 @@
  * Completes a pending bot registration by linking a Discord guild to a team.
  * The pending registration is created by MatchScheduler (Phase 1a) — this command
  * finds it by the user's Discord ID and activates it with the guild info.
+ *
+ * At registration time, builds a knownPlayers mapping (discordUserId → QW name)
+ * by cross-referencing the team roster from MatchScheduler with Discord guild members.
+ * This mapping is critical for match pairing — it lets the pipeline know which
+ * QW Hub matches belong to this team.
  */
 
-import { ChatInputCommandInteraction, MessageFlags } from 'discord.js';
+import { ChatInputCommandInteraction, Guild, MessageFlags } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
 
@@ -83,16 +88,26 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
 
   const doc = pendingSnap.docs[0];
   const data = doc.data();
-  const guildName = interaction.guild?.name || 'Unknown';
+  const guild = interaction.guild;
+  const guildName = guild?.name || 'Unknown';
 
-  // Activate the registration
+  // Build player mapping before activating
+  let knownPlayers: Record<string, string> = {};
+  if (guild) {
+    knownPlayers = await buildKnownPlayers(data.teamId, guild);
+  }
+
+  // Activate the registration with the player mapping
   await doc.ref.update({
     guildId,
     guildName,
+    knownPlayers,
     status: 'active',
     activatedAt: new Date(),
     updatedAt: new Date(),
   });
+
+  const mappedCount = Object.keys(knownPlayers).length;
 
   logger.info('Bot registration activated', {
     teamId: data.teamId,
@@ -100,10 +115,71 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     guildId,
     guildName,
     activatedBy: userId,
+    mappedPlayers: mappedCount,
   });
 
+  const mappingNote = mappedCount > 0
+    ? `\nMapped **${mappedCount}** player(s) from the team roster to Discord members.`
+    : '\nNo player mappings found — make sure team members have linked their Discord on MatchScheduler.';
+
   await interaction.reply({
-    content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.`,
+    content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.${mappingNote}`,
     flags: MessageFlags.Ephemeral,
   });
+}
+
+/**
+ * Build a discordUserId → QW name mapping by cross-referencing the team roster
+ * from MatchScheduler Firestore with members of the Discord guild.
+ *
+ * Queries `users` collection for members of this team, then checks which of them
+ * have a discordUserId that exists in the guild.
+ */
+async function buildKnownPlayers(teamId: string, guild: Guild): Promise<Record<string, string>> {
+  const db = getDb();
+  const knownPlayers: Record<string, string> = {};
+
+  try {
+    // Get all users on this team from MatchScheduler
+    const usersSnap = await db.collection('users')
+      .where(`teams.${teamId}`, '==', true)
+      .get();
+
+    if (usersSnap.empty) {
+      logger.info('No users found for team in Firestore', { teamId });
+      return knownPlayers;
+    }
+
+    // Fetch guild members so we can verify they're in the server
+    const guildMembers = await guild.members.fetch();
+
+    for (const userDoc of usersSnap.docs) {
+      const userData = userDoc.data();
+      const discordId = userData.discordUserId as string | undefined;
+      const qwName = userData.displayName as string | undefined;
+
+      if (!discordId || !qwName) continue;
+
+      // Only include if the Discord user is actually in this guild
+      if (guildMembers.has(discordId)) {
+        knownPlayers[discordId] = qwName;
+        logger.info('Mapped player', { discordId, qwName });
+      } else {
+        logger.info('Team member not in guild, skipping', { discordId, qwName });
+      }
+    }
+
+    logger.info('Player mapping complete', {
+      teamId,
+      rosterSize: usersSnap.size,
+      mappedCount: Object.keys(knownPlayers).length,
+    });
+  } catch (err) {
+    logger.error('Failed to build player mapping', {
+      teamId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  return knownPlayers;
 }

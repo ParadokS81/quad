@@ -30,6 +30,7 @@ import type {
 
 import { QWHubClient } from './stages/hub-client.js';
 import { pairMatches, formatPairingSummary } from './stages/match-pairer.js';
+import { getRegistrationForGuild } from '../registration/register.js';
 import { splitByTimestamps, extractIntermissions } from './stages/audio-splitter.js';
 import { transcribeDirectory } from './stages/transcriber.js';
 import { mergeTranscripts, detectOverlaps, computeStats, formatTimeline } from './stages/timeline-merger.js';
@@ -196,6 +197,29 @@ export async function runFastPipeline(
       hub.close();
     }
 
+    // Look up bot registration for team tag + player mapping
+    let teamTag = session.team?.tag ?? '';
+    let knownPlayers: Record<string, string> = {};
+    try {
+      const registration = await getRegistrationForGuild(session.guild.id);
+      if (registration) {
+        teamTag = registration.teamTag || teamTag;
+        knownPlayers = registration.knownPlayers || {};
+        logger.info('Registration found for guild', {
+          teamTag,
+          knownPlayerCount: Object.keys(knownPlayers).length,
+        });
+      } else {
+        logger.warn('No active registration for guild — match filtering will be limited', {
+          guildId: session.guild.id,
+        });
+      }
+    } catch (err) {
+      logger.warn('Failed to look up registration — continuing with session metadata only', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     // Stage 3: Pair matches + fetch ktxstats
     await writeStatus(processedDir, makeStatus(sessionId, 'pairing', 'Pairing matches + fetching ktxstats', { startedAt }));
 
@@ -216,7 +240,7 @@ export async function runFastPipeline(
       }
     }
 
-    const pairings = pairMatches(session, hubMatches, ktxstatsMap);
+    const pairings = pairMatches(session, hubMatches, ktxstatsMap, { teamTag, knownPlayers });
     const summary = formatPairingSummary(pairings);
     logger.info('Match pairing complete', { matchCount: pairings.length });
 
