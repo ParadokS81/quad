@@ -2,7 +2,9 @@ import {
   ChatInputCommandInteraction,
   GuildMember,
   MessageFlags,
+  PermissionFlagsBits,
   SlashCommandBuilder,
+  type VoiceBasedChannel,
 } from 'discord.js';
 import {
   joinVoiceChannel,
@@ -11,6 +13,7 @@ import {
   entersState,
 } from '@discordjs/voice';
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { logger } from '../../../core/logger.js';
 import { loadConfig } from '../../../core/config.js';
 import { RecordingSession, type SessionSummary } from '../session.js';
@@ -115,6 +118,35 @@ function fireStopCallbacks(summary: SessionSummary | null): void {
   }
 }
 
+/**
+ * Check bot permissions in a voice channel before attempting to join.
+ * Returns null if all good, or a user-facing error string if something is missing.
+ */
+function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMember): string | null {
+  const perms = channel.permissionsFor(botMember);
+  if (!perms) return 'Could not check permissions — the bot role may be misconfigured.';
+
+  const missing: string[] = [];
+  if (!perms.has(PermissionFlagsBits.ViewChannel)) missing.push('**View Channel**');
+  if (!perms.has(PermissionFlagsBits.Connect)) missing.push('**Connect**');
+
+  if (missing.length > 0) {
+    return [
+      `Missing permissions in <#${channel.id}>: ${missing.join(', ')}`,
+      '',
+      'To fix: **Server Settings** → **Roles** → find the bot\'s role → enable the missing permissions.',
+      'Or right-click the voice channel → **Edit Channel** → **Permissions** → add the bot with Connect access.',
+    ].join('\n');
+  }
+
+  // Check channel user limit
+  if (channel.userLimit > 0 && channel.members.size >= channel.userLimit) {
+    return `Voice channel <#${channel.id}> is full (${channel.userLimit}/${channel.userLimit}). Make room or increase the user limit.`;
+  }
+
+  return null;
+}
+
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -160,6 +192,16 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   if (!voiceChannel) {
     await interaction.reply({ content: 'You must be in a voice channel to start recording.', flags: MessageFlags.Ephemeral });
     return;
+  }
+
+  // Pre-check: does the bot have the permissions it needs?
+  const botMember = interaction.guild.members.me;
+  if (botMember) {
+    const permError = checkVoicePermissions(voiceChannel, botMember);
+    if (permError) {
+      await interaction.reply({ content: permError, flags: MessageFlags.Ephemeral });
+      return;
+    }
   }
 
   // Defer reply immediately — voice join can take several seconds
@@ -217,7 +259,22 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     const lingering = getVoiceConnection(guildId);
     if (lingering) lingering.destroy();
 
-    await interaction.editReply({ content: 'Failed to join voice channel (timeout). Please try again.' });
+    // Clean up empty session directory from failed attempt
+    await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
+
+    logger.warn('Voice connection timed out', { sessionId, guildId, channel: voiceChannel.name });
+
+    await interaction.editReply({
+      content: [
+        'Failed to join voice channel (timeout). Common causes:',
+        '',
+        '1. **Missing permissions** — the bot needs **Connect** on this voice channel',
+        '2. **Channel restrictions** — check if the channel has role or permission overrides blocking the bot',
+        '3. **Region issues** — if the voice channel has a region override, try resetting it to Automatic',
+        '',
+        'To check: right-click the voice channel → **Edit Channel** → **Permissions** → make sure the bot\'s role has **Connect**.',
+      ].join('\n'),
+    });
     return;
   }
 
