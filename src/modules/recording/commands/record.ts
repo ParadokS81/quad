@@ -126,17 +126,26 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
   const perms = channel.permissionsFor(botMember);
   if (!perms) return 'Could not check permissions — the bot role may be misconfigured.';
 
-  const missing: string[] = [];
-  if (!perms.has(PermissionFlagsBits.ViewChannel)) missing.push('**View Channel**');
-  if (!perms.has(PermissionFlagsBits.Connect)) missing.push('**Connect**');
+  const required: Array<{ flag: bigint; name: string }> = [
+    { flag: PermissionFlagsBits.ViewChannel, name: 'View Channel' },
+    { flag: PermissionFlagsBits.Connect, name: 'Connect' },
+    { flag: PermissionFlagsBits.Speak, name: 'Speak' },
+  ];
 
-  if (missing.length > 0) {
+  const lines = required.map(({ flag, name }) => {
+    const has = perms.has(flag);
+    return has ? `  ✓  ${name}` : `  ✗  **${name}** ← missing`;
+  });
+
+  const hasMissing = required.some(({ flag }) => !perms.has(flag));
+
+  if (hasMissing) {
     return [
-      `Missing permissions in <#${channel.id}>: ${missing.join(', ')}`,
+      `The bot is missing permissions in <#${channel.id}>:`,
       '',
-      'The bot needs these voice channel permissions: **View Channel**, **Connect**',
+      ...lines,
       '',
-      'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel** and **Connect**.',
+      'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable all three.',
     ].join('\n');
   }
 
@@ -267,14 +276,15 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
     await interaction.editReply({
       content: [
-        'Failed to join voice channel (timeout). The bot needs these permissions on this voice channel:',
+        'Failed to join voice channel (timeout). Make sure the bot has all three permissions on this channel:',
         '',
-        '• **View Channel** — so it can see the channel',
-        '• **Connect** — so it can join the channel',
+        '  •  **View Channel**',
+        '  •  **Connect**',
+        '  •  **Speak**',
         '',
-        'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel** and **Connect**.',
+        'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable all three.',
         '',
-        'If permissions look correct, also check for channel-level overrides that might be blocking the bot\'s role.',
+        'If permissions look correct, check for channel-level overrides that might be blocking the bot\'s role.',
       ].join('\n'),
     });
     return;
