@@ -153,11 +153,13 @@ async function resolveVisibility(
  * @param segments - Segments from the audio-splitter stage
  * @param teamTag - Team tag from session metadata (e.g., "sr") — fallback for unregistered guilds
  * @param guildId - Discord guild ID for registration lookup
+ * @param sessionId - Recording session ULID (from session_metadata.json recording_id)
  */
 export async function uploadVoiceRecordings(
   segments: SegmentMetadata[],
   teamTag: string,
   guildId: string,
+  sessionId: string,
 ): Promise<UploadResult> {
   // Lazy-import Firebase — skip entirely if not configured
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -266,6 +268,7 @@ export async function uploadVoiceRecordings(
           destination: storagePath,
           contentType: 'audio/ogg',
           metadata: {
+            cacheControl: 'public, max-age=31536000, immutable',
             metadata: {
               demoSha256: segment.demoSha256,
               map: segment.map,
@@ -288,6 +291,13 @@ export async function uploadVoiceRecordings(
         });
       }
 
+      // Determine our team vs opponent from matchData.teams
+      const resolvedTeamTag = registration?.teamTag || teamTag;
+      const ourTeam = segment.matchData.teams.find(t =>
+        t.name.toLowerCase() === resolvedTeamTag.toLowerCase()
+      );
+      const opponentTeam = segment.matchData.teams.find(t => t !== ourTeam);
+
       // Write manifest to Firestore
       await db.collection('voiceRecordings').doc(segment.demoSha256).set({
         demoSha256: segment.demoSha256,
@@ -301,6 +311,12 @@ export async function uploadVoiceRecordings(
         uploadedAt: new Date(),
         uploadedBy: 'quad-bot',
         trackCount: tracks.length,
+        sessionId,
+        opponentTag: opponentTeam?.name?.toLowerCase() || 'unknown',
+        teamFrags: ourTeam?.frags || 0,
+        opponentFrags: opponentTeam?.frags || 0,
+        gameId: segment.gameId,
+        mapOrder: segment.index,
       });
 
       uploaded++;

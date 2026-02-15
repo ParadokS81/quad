@@ -13,6 +13,7 @@ import { logger } from '../../core/logger.js';
 import { processCommand, handleProcessCommand } from './commands/process.js';
 import { onRecordingStop } from '../recording/commands/record.js';
 import { runFastPipeline } from './pipeline.js';
+import { startDeletionListener, stopDeletionListener } from './deletion-listener.js';
 
 export const processingModule: BotModule = {
   name: 'processing',
@@ -50,10 +51,24 @@ export const processingModule: BotModule = {
   },
 
   async onReady(_client: Client): Promise<void> {
+    // Start deletion request listener if Firebase is configured
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        const { initFirestore } = await import('../standin/firestore.js');
+        const db = initFirestore();
+        startDeletionListener(db);
+      } catch (err) {
+        logger.warn('Deletion listener not started — Firebase init failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     logger.info('Processing module loaded');
   },
 
   async onShutdown(): Promise<void> {
+    stopDeletionListener();
     logger.info('Processing module shut down');
   },
 };
