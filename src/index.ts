@@ -6,7 +6,7 @@ import { recordingModule } from './modules/recording/index.js';
 import { processingModule } from './modules/processing/index.js';
 import { standinModule } from './modules/standin/index.js';
 import { registrationModule } from './modules/registration/index.js';
-import { isRecording, getActiveSession } from './modules/recording/commands/record.js';
+import { isRecording, getActiveSessions } from './modules/recording/commands/record.js';
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
@@ -16,7 +16,11 @@ logger.info('Starting Quad', { version: '1.0.0' });
 // Provide recording status to health endpoint
 setRecordingStatusProvider(() => ({
   active: isRecording(),
-  sessionId: getActiveSession()?.sessionId ?? null,
+  sessionCount: getActiveSessions().size,
+  sessions: Array.from(getActiveSessions().entries()).map(([guildId, s]) => ({
+    guildId,
+    sessionId: s.sessionId,
+  })),
 }));
 
 // Prevent crashes from unhandled promises and exceptions

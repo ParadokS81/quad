@@ -25,8 +25,8 @@ export const recordCommand = new SlashCommandBuilder()
     sub.setName('stop').setDescription('Stop recording and save files')
   ) as SlashCommandBuilder;
 
-// Module-level state
-let activeSession: RecordingSession | null = null;
+// Module-level state — per-guild sessions for concurrent multi-server recording
+const activeSessions = new Map<string, RecordingSession>();
 
 // Post-recording callbacks (e.g., auto-trigger processing pipeline)
 type RecordingStopCallback = (sessionDir: string, sessionId: string) => void;
@@ -40,27 +40,38 @@ export function onRecordingStop(callback: RecordingStopCallback): void {
   onStopCallbacks.push(callback);
 }
 
-export function isRecording(): boolean {
-  return activeSession !== null;
+export function isRecording(guildId?: string): boolean {
+  if (guildId) return activeSessions.has(guildId);
+  return activeSessions.size > 0;
 }
 
-export function getRecordingChannelId(): string | null {
-  return activeSession?.channelId ?? null;
+export function getRecordingChannelId(guildId: string): string | null {
+  return activeSessions.get(guildId)?.channelId ?? null;
 }
 
 export function getRecordingGuildId(): string | null {
-  return activeSession?.guildId ?? null;
+  // Legacy: return first active guild (used by health endpoint)
+  const first = activeSessions.values().next();
+  return first.done ? null : first.value.guildId;
 }
 
-export function getActiveSession(): RecordingSession | null {
-  return activeSession;
+export function getActiveSession(guildId?: string): RecordingSession | null {
+  if (guildId) return activeSessions.get(guildId) ?? null;
+  // Legacy: return first (for health endpoint)
+  const first = activeSessions.values().next();
+  return first.done ? null : first.value;
 }
 
-export async function stopRecording(): Promise<SessionSummary | null> {
-  if (!activeSession) return null;
+/** Get all active sessions (for health endpoint / shutdown). */
+export function getActiveSessions(): Map<string, RecordingSession> {
+  return activeSessions;
+}
 
-  const session = activeSession;
-  activeSession = null; // Clear immediately to prevent double-stop
+export async function stopRecording(guildId: string): Promise<SessionSummary | null> {
+  const session = activeSessions.get(guildId);
+  if (!session) return null;
+
+  activeSessions.delete(guildId); // Clear immediately to prevent double-stop
 
   try {
     return await session.stop();
@@ -77,13 +88,14 @@ export async function stopRecording(): Promise<SessionSummary | null> {
  * Stop recording and fire post-recording callbacks. Used by both /record stop and idle auto-stop.
  * Returns the session summary (or null if no active session).
  */
-export async function performStop(reason: string): Promise<SessionSummary | null> {
-  if (!activeSession) return null;
+export async function performStop(guildId: string, reason: string): Promise<SessionSummary | null> {
+  const session = activeSessions.get(guildId);
+  if (!session) return null;
 
-  const sessionId = activeSession.sessionId;
-  logger.info(`Recording stop: ${reason}`, { sessionId });
+  const sessionId = session.sessionId;
+  logger.info(`Recording stop: ${reason}`, { sessionId, guildId });
 
-  const summary = await stopRecording();
+  const summary = await stopRecording(guildId);
   logger.info('Recording stopped', { sessionId, reason, trackCount: summary?.trackCount });
 
   fireStopCallbacks(summary);
@@ -130,9 +142,14 @@ export async function handleRecordCommand(interaction: ChatInputCommandInteracti
 }
 
 async function handleStart(interaction: ChatInputCommandInteraction): Promise<void> {
-  // Guard: already recording
-  if (activeSession) {
-    await interaction.reply({ content: 'Already recording.', flags: MessageFlags.Ephemeral });
+  if (!interaction.guildId || !interaction.guild) {
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // Guard: already recording in THIS guild
+  if (activeSessions.has(interaction.guildId)) {
+    await interaction.reply({ content: 'Already recording in this server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -145,43 +162,39 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
-  if (!interaction.guildId || !interaction.guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
   // Defer reply immediately — voice join can take several seconds
   await interaction.deferReply();
 
   const config = loadConfig();
   const sessionId = randomUUID();
+  const guildId = interaction.guildId;
 
   logger.info('Recording start requested', {
     user: interaction.user.tag,
-    guild: interaction.guildId,
+    guild: guildId,
     channel: voiceChannel.name,
     channelId: voiceChannel.id,
     sessionId,
+    concurrentSessions: activeSessions.size,
   });
 
   // Create session and output directory
-  activeSession = new RecordingSession({
+  const session = new RecordingSession({
     sessionId,
     recordingDir: config.recordingDir,
-    guildId: interaction.guildId,
+    guildId,
     guildName: interaction.guild.name,
     channelId: voiceChannel.id,
     channelName: voiceChannel.name,
   });
 
   try {
-    await activeSession.init();
+    await session.init();
   } catch (err) {
     logger.error('Failed to create session directory', {
       error: err instanceof Error ? err.message : String(err),
       sessionId,
     });
-    activeSession = null;
     await interaction.editReply({ content: 'Failed to create recording directory.' });
     return;
   }
@@ -189,7 +202,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   // Join voice channel
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
-    guildId: interaction.guildId,
+    guildId,
     adapterCreator: voiceChannel.guild.voiceAdapterCreator,
     selfDeaf: false,
     selfMute: true,
@@ -201,21 +214,23 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     // Ensure the bot fully leaves the voice channel
     connection.destroy();
     // Belt-and-suspenders: also try getVoiceConnection in case destroy didn't clean up
-    const lingering = getVoiceConnection(interaction.guildId!);
+    const lingering = getVoiceConnection(guildId);
     if (lingering) lingering.destroy();
 
-    activeSession = null;
     await interaction.editReply({ content: 'Failed to join voice channel (timeout). Please try again.' });
     return;
   }
 
+  // Register session BEFORE starting — so VoiceStateUpdate handler can find it
+  activeSessions.set(guildId, session);
+
   // Start the session — sets up speaking listeners and subscribes to users
-  activeSession.start(connection, interaction.guild);
+  session.start(connection, interaction.guild);
 
   // If the connection is lost (kicked, network failure), auto-stop and save
-  activeSession.onConnectionLost = () => {
-    logger.warn('Connection lost — auto-stopping recording', { sessionId });
-    stopRecording().catch((err) => {
+  session.onConnectionLost = () => {
+    logger.warn('Connection lost — auto-stopping recording', { sessionId, guildId });
+    stopRecording(guildId).catch((err) => {
       logger.error('Failed to auto-stop recording after connection loss', {
         error: err instanceof Error ? err.message : String(err),
         sessionId,
@@ -225,7 +240,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
   // Count current users in the channel (excluding the bot)
   const userCount = voiceChannel.members.filter((m) => !m.user.bot).size;
-  const startUnix = Math.floor(activeSession.startTime.getTime() / 1000);
+  const startUnix = Math.floor(session.startTime.getTime() / 1000);
   const shortId = sessionId.slice(0, 8);
 
   await interaction.editReply({
@@ -249,22 +264,23 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 }
 
 async function handleStop(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!activeSession) {
-    await interaction.reply({ content: 'Not currently recording.', flags: MessageFlags.Ephemeral });
+  const guildId = interaction.guildId;
+  if (!guildId || !activeSessions.has(guildId)) {
+    await interaction.reply({ content: 'Not currently recording in this server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const sessionId = activeSession.sessionId;
+  const sessionId = activeSessions.get(guildId)!.sessionId;
 
   logger.info('Recording stop requested', {
     user: interaction.user.tag,
-    guild: interaction.guildId,
+    guild: guildId,
     sessionId,
   });
 
   // CRITICAL: Stop the recording FIRST, then try to reply.
   // If deferReply/editReply fail (Discord API hiccup), the recording is still saved.
-  const summary = await stopRecording();
+  const summary = await stopRecording(guildId);
 
   // Best-effort reply to the interaction — never let a Discord API error undo the stop
   try {

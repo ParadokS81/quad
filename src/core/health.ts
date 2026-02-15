@@ -5,7 +5,8 @@ let server: Server | null = null;
 
 interface HealthStatus {
   active: boolean;
-  sessionId: string | null;
+  sessionCount: number;
+  sessions: Array<{ guildId: string; sessionId: string }>;
 }
 
 /** Function that returns current recording status. Set by the caller. */
@@ -18,7 +19,7 @@ export function setRecordingStatusProvider(fn: () => HealthStatus): void {
 export function startHealthServer(port: number, modules: string[]): void {
   server = createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
-      const recording = getRecordingStatus?.() ?? { active: false, sessionId: null };
+      const recording = getRecordingStatus?.() ?? { active: false, sessionCount: 0, sessions: [] };
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({

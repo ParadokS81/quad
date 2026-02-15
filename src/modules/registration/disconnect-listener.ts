@@ -80,10 +80,10 @@ async function handleDisconnectRequest(
 
   try {
     // Stop active recording if it's in this guild
-    const activeSession = getActiveSession();
-    if (activeSession?.guildId === guildId) {
+    const activeSession = getActiveSession(guildId);
+    if (activeSession) {
       logger.info('Stopping active recording in disconnecting guild', { guildId });
-      await performStop('guild disconnect request');
+      await performStop(guildId, 'guild disconnect request');
     }
 
     // Destroy voice connection if any
