@@ -181,14 +181,14 @@ function filterOurMatches(
       if (tagMatch) return true;
     }
 
-    // Check player name overlap
+    // Check player name overlap (substring match — hub names have QW decorations like "• razor")
     if (resolvedQwNames.size > 0) {
-      const matchPlayerNames = new Set(
-        (match.players ?? []).map((p) => p.name?.toLowerCase()).filter(Boolean),
-      );
+      const matchPlayerNames = (match.players ?? [])
+        .map((p) => p.name?.toLowerCase())
+        .filter(Boolean) as string[];
       let overlap = 0;
-      for (const name of resolvedQwNames) {
-        if (matchPlayerNames.has(name)) overlap++;
+      for (const qwName of resolvedQwNames) {
+        if (matchPlayerNames.some((hubName) => hubName.includes(qwName))) overlap++;
       }
       if (overlap >= MIN_PLAYER_OVERLAP) return true;
     }
@@ -235,20 +235,22 @@ function scoreConfidence(
   }
 
   // Factor 3: Player name overlap (weight 0.3)
+  // Hub player names have QW decorations (e.g., "• razor", "tco.........axe")
+  // Use substring matching: check if hub name contains the Discord display name
   const sessionNames = new Set<string>();
   for (const track of session.tracks) {
     sessionNames.add(track.discord_username.toLowerCase());
     sessionNames.add(track.discord_display_name.toLowerCase());
   }
 
-  const matchNames = new Set<string>();
-  for (const player of match.players ?? []) {
-    if (player.name) matchNames.add(player.name.toLowerCase());
-  }
+  const matchPlayerNames = (match.players ?? [])
+    .map((p) => p.name?.toLowerCase())
+    .filter(Boolean) as string[];
 
   let overlapCount = 0;
   for (const name of sessionNames) {
-    if (matchNames.has(name)) overlapCount++;
+    if (name.length < 3) continue; // Skip very short names to avoid false positives
+    if (matchPlayerNames.some((hubName) => hubName.includes(name))) overlapCount++;
   }
 
   if (overlapCount >= 3) {
