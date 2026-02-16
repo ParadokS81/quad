@@ -362,6 +362,9 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     }
   }
 
+  // Defer reply immediately — voice join + cleanup can take several seconds
+  await interaction.deferReply();
+
   // Clean up any stale voice connection before joining (e.g., zombie from a failed attempt)
   const existingConnection = getVoiceConnection(interaction.guildId);
   if (existingConnection) {
@@ -374,9 +377,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     // Brief pause to let the gateway process the disconnect
     await new Promise((r) => setTimeout(r, 500));
   }
-
-  // Defer reply immediately — voice join can take several seconds
-  await interaction.deferReply();
 
   const config = loadConfig();
   const sessionId = randomUUID();
