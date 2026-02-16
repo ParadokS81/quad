@@ -1,5 +1,5 @@
 import { Client, ChatInputCommandInteraction, Events, ChannelType } from 'discord.js';
-import { getVoiceConnection } from '@discordjs/voice';
+import { getVoiceConnection, joinVoiceChannel } from '@discordjs/voice';
 import { type BotModule } from '../../core/module.js';
 import { logger } from '../../core/logger.js';
 import {
@@ -86,25 +86,37 @@ export const recordingModule: BotModule = {
 
   async onReady(client: Client): Promise<void> {
     // Clean up any stale voice connections from a previous session (e.g., after restart).
-    // We use a raw gateway OP4 payload because:
-    // - me.voice.disconnect() requires MOVE_MEMBERS permission (bot doesn't have it)
-    // - connection.destroy() has no connection object after restart
-    // - OP4 with channel_id: null goes through the gateway directly — always works
+    // Uses the same adapter mechanism as normal voice operations — create a temp
+    // connection to get a working adapter, then immediately destroy it.
     for (const guild of client.guilds.cache.values()) {
       const me = guild.members.me;
+      // Clean up @discordjs/voice internal state first
+      const existingConn = getVoiceConnection(guild.id);
+      if (existingConn) {
+        try { existingConn.destroy(); } catch { /* */ }
+      }
+      // If bot is still in a voice channel, force-leave via temp connection
       if (me?.voice.channelId) {
         logger.warn('Disconnecting from stale voice channel on startup', {
           guild: guild.name,
           channel: me.voice.channel?.name,
         });
-        guild.shard.send({
-          op: 4,
-          d: { guild_id: guild.id, channel_id: null, self_mute: true, self_deaf: false },
-        });
+        try {
+          const tempConn = joinVoiceChannel({
+            channelId: me.voice.channelId,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: true,
+          });
+          tempConn.destroy();
+        } catch (err) {
+          logger.warn('Failed to force-disconnect on startup', {
+            guild: guild.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
-      // Also clean up @discordjs/voice internal state if any
-      const connection = getVoiceConnection(guild.id);
-      if (connection) connection.destroy();
     }
 
     // Initialize Firestore session tracker if Firebase is configured

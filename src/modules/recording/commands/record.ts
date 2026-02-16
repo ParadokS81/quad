@@ -186,22 +186,46 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
 }
 
 /**
- * Send a raw gateway OP4 to leave voice. This bypasses both @discordjs/voice
- * (which may have a broken adapter) and the REST API (which needs MOVE_MEMBERS).
- * The gateway always accepts OP4 from the bot for its own voice state.
+ * Force-disconnect the bot from voice using @discordjs/voice's own adapter.
+ * Creates a temporary voice connection (which sets up a fresh adapter through
+ * the guild's voiceAdapterCreator), then immediately destroys it.
+ * The destroy() sends OP4 with channel_id: null through the properly initialized
+ * adapter — this is the same code path that works when normal recordings end.
  */
-function gatewayDisconnect(guild: Guild): void {
-  guild.shard.send({
-    op: 4,
-    d: { guild_id: guild.id, channel_id: null, self_mute: true, self_deaf: false },
-  });
+function forceDisconnect(guild: Guild): void {
+  // If there's already a @discordjs/voice connection, destroy it directly
+  const existing = getVoiceConnection(guild.id);
+  if (existing) {
+    try { existing.destroy(); } catch { /* already destroyed */ }
+    return;
+  }
+
+  // No existing connection — create a temporary one just to get a working adapter,
+  // then destroy it to send the leave payload
+  const channelId = guild.members.me?.voice.channelId;
+  if (!channelId) return; // Not in a voice channel
+
+  try {
+    const tempConnection = joinVoiceChannel({
+      channelId,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: true,
+    });
+    // Immediately destroy — sends OP4 with channel_id: null through the adapter
+    tempConnection.destroy();
+    logger.info('Force-disconnected from voice via temp connection', { guildId: guild.id });
+  } catch (err) {
+    logger.warn('Force-disconnect failed', {
+      guildId: guild.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
- * Force the bot out of a voice channel. Uses multiple strategies because
- * different failure modes break different disconnect paths:
- * 1. connection.destroy() — works when adapter is healthy
- * 2. Gateway OP4 — always works, bypasses broken adapters and missing permissions
+ * Force the bot out of a voice channel after a failed join attempt.
  */
 function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Guild): void {
   try {
@@ -213,8 +237,10 @@ function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Gu
   if (lingering) {
     try { lingering.destroy(); } catch { /* already destroyed */ }
   }
-  // Gateway-level disconnect — the nuclear option that always works
-  gatewayDisconnect(guild);
+  // If still in channel, use the temp connection approach
+  if (guild.members.me?.voice.channelId) {
+    forceDisconnect(guild);
+  }
 }
 
 /**
@@ -344,7 +370,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   }
   if (interaction.guild.members.me?.voice.channelId) {
     logger.info('Bot still in voice channel — forcing gateway disconnect', { guildId: interaction.guildId });
-    gatewayDisconnect(interaction.guild);
+    forceDisconnect(interaction.guild);
     // Brief pause to let the gateway process the disconnect
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -481,7 +507,7 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
       const vc = getVoiceConnection(guildId);
       if (vc) { try { vc.destroy(); } catch { /* */ } }
       if (interaction.guild.members.me?.voice.channelId) {
-        gatewayDisconnect(interaction.guild);
+        forceDisconnect(interaction.guild);
         await interaction.reply({ content: 'Not recording, but the bot was stuck in voice — disconnected it.', flags: MessageFlags.Ephemeral });
         return;
       }
