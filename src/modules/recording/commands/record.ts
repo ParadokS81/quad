@@ -1,6 +1,5 @@
 import {
   ChatInputCommandInteraction,
-  Guild,
   GuildMember,
   MessageFlags,
   PermissionFlagsBits,
@@ -10,7 +9,7 @@ import {
 import {
   joinVoiceChannel,
   getVoiceConnection,
-  VoiceConnection,
+  type VoiceConnection,
   VoiceConnectionStatus,
   entersState,
 } from '@discordjs/voice';
@@ -32,6 +31,7 @@ export const recordCommand = new SlashCommandBuilder()
 
 // Module-level state — per-guild sessions for concurrent multi-server recording
 const activeSessions = new Map<string, RecordingSession>();
+const joiningGuilds = new Set<string>(); // Prevent concurrent join attempts per guild
 
 // Lifecycle callbacks
 type RecordingStartCallback = (session: RecordingSession) => void;
@@ -186,64 +186,6 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
 }
 
 /**
- * Force-disconnect the bot from voice using @discordjs/voice's own adapter.
- * Creates a temporary voice connection (which sets up a fresh adapter through
- * the guild's voiceAdapterCreator), then immediately destroys it.
- * The destroy() sends OP4 with channel_id: null through the properly initialized
- * adapter — this is the same code path that works when normal recordings end.
- */
-function forceDisconnect(guild: Guild): void {
-  // If there's already a @discordjs/voice connection, destroy it directly
-  const existing = getVoiceConnection(guild.id);
-  if (existing) {
-    try { existing.destroy(); } catch { /* already destroyed */ }
-    return;
-  }
-
-  // No existing connection — create a temporary one just to get a working adapter,
-  // then destroy it to send the leave payload
-  const channelId = guild.members.me?.voice.channelId;
-  if (!channelId) return; // Not in a voice channel
-
-  try {
-    const tempConnection = joinVoiceChannel({
-      channelId,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: true,
-    });
-    // Immediately destroy — sends OP4 with channel_id: null through the adapter
-    tempConnection.destroy();
-    logger.info('Force-disconnected from voice via temp connection', { guildId: guild.id });
-  } catch (err) {
-    logger.warn('Force-disconnect failed', {
-      guildId: guild.id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-/**
- * Force the bot out of a voice channel after a failed join attempt.
- */
-function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Guild): void {
-  try {
-    connection.destroy();
-  } catch {
-    // Already destroyed — fine
-  }
-  const lingering = getVoiceConnection(guildId);
-  if (lingering) {
-    try { lingering.destroy(); } catch { /* already destroyed */ }
-  }
-  // If still in channel, use the temp connection approach
-  if (guild.members.me?.voice.channelId) {
-    forceDisconnect(guild);
-  }
-}
-
-/**
  * Attempt to join a voice channel with one automatic retry.
  * The DAVE (Discord Audio & Video E2E Encryption) handshake can take 15-20+ seconds
  * on first connection, or fail transiently. We use a 30s timeout and retry once.
@@ -251,11 +193,9 @@ function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Gu
 async function joinWithRetry(opts: {
   voiceChannel: VoiceBasedChannel;
   guildId: string;
-  guild: Guild;
   sessionId: string;
-  session: RecordingSession;
 }): Promise<VoiceConnection | null> {
-  const { voiceChannel, guildId, guild, sessionId } = opts;
+  const { voiceChannel, guildId, sessionId } = opts;
   const maxAttempts = 2;
   const timeout = 30_000;
 
@@ -292,8 +232,8 @@ async function joinWithRetry(opts: {
         timeoutMs: timeout,
       });
 
-      // Force-leave to prevent zombie
-      forceLeaveVoice(connection, guildId, guild);
+      // Just destroy the connection — do NOT create temp connections (poisons DAVE state)
+      try { connection.destroy(); } catch { /* already destroyed */ }
 
       if (!isLastAttempt) {
         logger.info('Retrying voice connection in 2s', { sessionId, attempt });
@@ -337,9 +277,13 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
-  // Guard: already recording in THIS guild
+  // Guard: already recording or joining in THIS guild
   if (activeSessions.has(interaction.guildId)) {
     await interaction.reply({ content: 'Already recording in this server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (joiningGuilds.has(interaction.guildId)) {
+    await interaction.reply({ content: 'Already connecting — please wait.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -362,20 +306,17 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     }
   }
 
-  // Defer reply immediately — voice join + cleanup can take several seconds
+  // Defer reply immediately — voice join can take several seconds (DAVE handshake)
   await interaction.deferReply();
 
-  // Clean up any stale voice connection before joining (e.g., zombie from a failed attempt)
+  // Lock this guild while joining — prevents concurrent /record start race condition
+  joiningGuilds.add(interaction.guildId);
+
+  // Clean up any stale @discordjs/voice internal state (NOT a DAVE handshake — just memory cleanup)
   const existingConnection = getVoiceConnection(interaction.guildId);
   if (existingConnection) {
-    logger.info('Cleaning up stale voice connection before join', { guildId: interaction.guildId });
+    logger.info('Cleaning up stale voice connection state', { guildId: interaction.guildId });
     try { existingConnection.destroy(); } catch { /* already destroyed */ }
-  }
-  if (interaction.guild.members.me?.voice.channelId) {
-    logger.info('Bot still in voice channel — forcing gateway disconnect', { guildId: interaction.guildId });
-    forceDisconnect(interaction.guild);
-    // Brief pause to let the gateway process the disconnect
-    await new Promise((r) => setTimeout(r, 500));
   }
 
   const config = loadConfig();
@@ -404,6 +345,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   try {
     await session.init();
   } catch (err) {
+    joiningGuilds.delete(guildId);
     logger.error('Failed to create session directory', {
       error: err instanceof Error ? err.message : String(err),
       sessionId,
@@ -416,12 +358,11 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   const connection = await joinWithRetry({
     voiceChannel,
     guildId,
-    guild: interaction.guild,
     sessionId,
-    session,
   });
 
   if (!connection) {
+    joiningGuilds.delete(guildId);
     // Clean up empty session directory from failed attempt
     await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
 
@@ -440,6 +381,9 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     });
     return;
   }
+
+  // Voice connected — release the joining lock
+  joiningGuilds.delete(guildId);
 
   // Register session BEFORE starting — so VoiceStateUpdate handler can find it
   activeSessions.set(guildId, session);
@@ -502,13 +446,12 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 async function handleStop(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
   if (!guildId || !activeSessions.has(guildId)) {
-    // Even without an active session, clean up any zombie voice state
-    if (guildId && interaction.guild) {
+    // Clean up any stale @discordjs/voice state (no DAVE handshake — just memory cleanup)
+    if (guildId) {
       const vc = getVoiceConnection(guildId);
-      if (vc) { try { vc.destroy(); } catch { /* */ } }
-      if (interaction.guild.members.me?.voice.channelId) {
-        forceDisconnect(interaction.guild);
-        await interaction.reply({ content: 'Not recording, but the bot was stuck in voice — disconnected it.', flags: MessageFlags.Ephemeral });
+      if (vc) {
+        try { vc.destroy(); } catch { /* */ }
+        await interaction.reply({ content: 'Not recording, but cleaned up stale voice state. Try `/record start` again.', flags: MessageFlags.Ephemeral });
         return;
       }
     }
