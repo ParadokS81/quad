@@ -1,5 +1,6 @@
 import {
   ChatInputCommandInteraction,
+  Guild,
   GuildMember,
   MessageFlags,
   PermissionFlagsBits,
@@ -9,6 +10,7 @@ import {
 import {
   joinVoiceChannel,
   getVoiceConnection,
+  VoiceConnection,
   VoiceConnectionStatus,
   entersState,
 } from '@discordjs/voice';
@@ -183,6 +185,92 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
   return null;
 }
 
+/**
+ * Force the bot out of a voice channel. connection.destroy() only tears down the
+ * local voice connection object — if the DAVE handshake completed after our timeout,
+ * the bot can still appear in the channel as a zombie. This sends a proper voice
+ * state update through the Discord gateway to guarantee the bot leaves.
+ */
+function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Guild): void {
+  try {
+    connection.destroy();
+  } catch {
+    // Already destroyed — fine
+  }
+  const lingering = getVoiceConnection(guildId);
+  if (lingering) {
+    try { lingering.destroy(); } catch { /* already destroyed */ }
+  }
+  // Gateway-level disconnect — prevents zombie state
+  try {
+    guild.members.me?.voice.disconnect();
+  } catch {
+    // Best effort
+  }
+}
+
+/**
+ * Attempt to join a voice channel with one automatic retry.
+ * The DAVE (Discord Audio & Video E2E Encryption) handshake can take 15-20+ seconds
+ * on first connection, or fail transiently. We use a 30s timeout and retry once.
+ */
+async function joinWithRetry(opts: {
+  voiceChannel: VoiceBasedChannel;
+  guildId: string;
+  guild: Guild;
+  sessionId: string;
+  session: RecordingSession;
+}): Promise<VoiceConnection | null> {
+  const { voiceChannel, guildId, guild, sessionId } = opts;
+  const maxAttempts = 2;
+  const timeout = 30_000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId,
+      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: true,
+    });
+
+    // Log state transitions for debugging
+    const stateLog = (oldState: { status: string }, newState: { status: string }) => {
+      logger.debug('Voice connection state change', {
+        sessionId, attempt,
+        from: oldState.status, to: newState.status,
+      });
+    };
+    connection.on('stateChange', stateLog);
+
+    try {
+      await entersState(connection, VoiceConnectionStatus.Ready, timeout);
+      connection.off('stateChange', stateLog);
+      return connection;
+    } catch {
+      connection.off('stateChange', stateLog);
+      const isLastAttempt = attempt === maxAttempts;
+
+      logger.warn('Voice connection failed', {
+        sessionId, guildId,
+        channel: voiceChannel.name,
+        attempt: `${attempt}/${maxAttempts}`,
+        timeoutMs: timeout,
+      });
+
+      // Force-leave to prevent zombie
+      forceLeaveVoice(connection, guildId, guild);
+
+      if (!isLastAttempt) {
+        logger.info('Retrying voice connection in 2s', { sessionId, attempt });
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
+  return null;
+}
+
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -277,32 +365,22 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
-  // Join voice channel
-  const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
+  // Join voice channel — with retry for transient DAVE handshake failures
+  const connection = await joinWithRetry({
+    voiceChannel,
     guildId,
-    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: true,
+    guild: interaction.guild,
+    sessionId,
+    session,
   });
 
-  try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
-  } catch {
-    // Ensure the bot fully leaves the voice channel
-    connection.destroy();
-    // Belt-and-suspenders: also try getVoiceConnection in case destroy didn't clean up
-    const lingering = getVoiceConnection(guildId);
-    if (lingering) lingering.destroy();
-
+  if (!connection) {
     // Clean up empty session directory from failed attempt
     await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
 
-    logger.warn('Voice connection timed out', { sessionId, guildId, channel: voiceChannel.name });
-
     await interaction.editReply({
       content: [
-        'Failed to join voice channel (timeout). Make sure the bot has all three permissions on this channel:',
+        'Failed to join voice channel after 2 attempts. Make sure the bot has all three permissions on this channel:',
         '',
         '  •  **View Channel**',
         '  •  **Connect**',
