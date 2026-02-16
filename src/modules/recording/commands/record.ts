@@ -186,10 +186,22 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
 }
 
 /**
- * Force the bot out of a voice channel. connection.destroy() only tears down the
- * local voice connection object — if the DAVE handshake completed after our timeout,
- * the bot can still appear in the channel as a zombie. This sends a proper voice
- * state update through the Discord gateway to guarantee the bot leaves.
+ * Send a raw gateway OP4 to leave voice. This bypasses both @discordjs/voice
+ * (which may have a broken adapter) and the REST API (which needs MOVE_MEMBERS).
+ * The gateway always accepts OP4 from the bot for its own voice state.
+ */
+function gatewayDisconnect(guild: Guild): void {
+  guild.shard.send({
+    op: 4,
+    d: { guild_id: guild.id, channel_id: null, self_mute: true, self_deaf: false },
+  });
+}
+
+/**
+ * Force the bot out of a voice channel. Uses multiple strategies because
+ * different failure modes break different disconnect paths:
+ * 1. connection.destroy() — works when adapter is healthy
+ * 2. Gateway OP4 — always works, bypasses broken adapters and missing permissions
  */
 function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Guild): void {
   try {
@@ -201,14 +213,8 @@ function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Gu
   if (lingering) {
     try { lingering.destroy(); } catch { /* already destroyed */ }
   }
-  // Gateway-level disconnect — prevents zombie state
-  // voice.disconnect() returns a Promise and requires MOVE_MEMBERS permission,
-  // so catch both sync and async errors
-  try {
-    guild.members.me?.voice.disconnect().catch(() => {});
-  } catch {
-    // Best effort
-  }
+  // Gateway-level disconnect — the nuclear option that always works
+  gatewayDisconnect(guild);
 }
 
 /**
@@ -328,6 +334,19 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       await interaction.reply({ content: permError, flags: MessageFlags.Ephemeral });
       return;
     }
+  }
+
+  // Clean up any stale voice connection before joining (e.g., zombie from a failed attempt)
+  const existingConnection = getVoiceConnection(interaction.guildId);
+  if (existingConnection) {
+    logger.info('Cleaning up stale voice connection before join', { guildId: interaction.guildId });
+    try { existingConnection.destroy(); } catch { /* already destroyed */ }
+  }
+  if (interaction.guild.members.me?.voice.channelId) {
+    logger.info('Bot still in voice channel — forcing gateway disconnect', { guildId: interaction.guildId });
+    gatewayDisconnect(interaction.guild);
+    // Brief pause to let the gateway process the disconnect
+    await new Promise((r) => setTimeout(r, 500));
   }
 
   // Defer reply immediately — voice join can take several seconds
@@ -457,6 +476,16 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 async function handleStop(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
   if (!guildId || !activeSessions.has(guildId)) {
+    // Even without an active session, clean up any zombie voice state
+    if (guildId && interaction.guild) {
+      const vc = getVoiceConnection(guildId);
+      if (vc) { try { vc.destroy(); } catch { /* */ } }
+      if (interaction.guild.members.me?.voice.channelId) {
+        gatewayDisconnect(interaction.guild);
+        await interaction.reply({ content: 'Not recording, but the bot was stuck in voice — disconnected it.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+    }
     await interaction.reply({ content: 'Not currently recording in this server.', flags: MessageFlags.Ephemeral });
     return;
   }

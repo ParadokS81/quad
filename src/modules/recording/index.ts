@@ -86,7 +86,10 @@ export const recordingModule: BotModule = {
 
   async onReady(client: Client): Promise<void> {
     // Clean up any stale voice connections from a previous session (e.g., after restart).
-    // Gateway-level: the bot may still be in a voice channel from before the restart.
+    // We use a raw gateway OP4 payload because:
+    // - me.voice.disconnect() requires MOVE_MEMBERS permission (bot doesn't have it)
+    // - connection.destroy() has no connection object after restart
+    // - OP4 with channel_id: null goes through the gateway directly — always works
     for (const guild of client.guilds.cache.values()) {
       const me = guild.members.me;
       if (me?.voice.channelId) {
@@ -94,7 +97,10 @@ export const recordingModule: BotModule = {
           guild: guild.name,
           channel: me.voice.channel?.name,
         });
-        await me.voice.disconnect().catch(() => {});
+        guild.shard.send({
+          op: 4,
+          d: { guild_id: guild.id, channel_id: null, self_mute: true, self_deaf: false },
+        });
       }
       // Also clean up @discordjs/voice internal state if any
       const connection = getVoiceConnection(guild.id);
