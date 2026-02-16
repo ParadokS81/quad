@@ -238,7 +238,7 @@ async function joinWithRetry(opts: {
 
     // Log state transitions for debugging
     const stateLog = (oldState: { status: string }, newState: { status: string }) => {
-      logger.debug('Voice connection state change', {
+      logger.info('Voice connection state change', {
         sessionId, attempt,
         from: oldState.status, to: newState.status,
       });
