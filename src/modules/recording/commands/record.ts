@@ -31,9 +31,19 @@ export const recordCommand = new SlashCommandBuilder()
 // Module-level state — per-guild sessions for concurrent multi-server recording
 const activeSessions = new Map<string, RecordingSession>();
 
-// Post-recording callbacks (e.g., auto-trigger processing pipeline)
+// Lifecycle callbacks
+type RecordingStartCallback = (session: RecordingSession) => void;
+const onStartCallbacks: RecordingStartCallback[] = [];
+
 type RecordingStopCallback = (sessionDir: string, sessionId: string) => void;
 const onStopCallbacks: RecordingStopCallback[] = [];
+
+type ParticipantChangeCallback = (guildId: string, participants: string[]) => void;
+const onParticipantChangeCallbacks: ParticipantChangeCallback[] = [];
+
+export function onRecordingStart(callback: RecordingStartCallback): void {
+  onStartCallbacks.push(callback);
+}
 
 /**
  * Register a callback to fire after a recording session stops successfully.
@@ -41,6 +51,22 @@ const onStopCallbacks: RecordingStopCallback[] = [];
  */
 export function onRecordingStop(callback: RecordingStopCallback): void {
   onStopCallbacks.push(callback);
+}
+
+export function onParticipantChange(callback: ParticipantChangeCallback): void {
+  onParticipantChangeCallbacks.push(callback);
+}
+
+export function fireParticipantChangeCallbacks(guildId: string, participants: string[]): void {
+  for (const cb of onParticipantChangeCallbacks) {
+    try {
+      cb(guildId, participants);
+    } catch (err) {
+      logger.error('Participant change callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 export function isRecording(guildId?: string): boolean {
@@ -295,6 +321,22 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
   // Start the session — sets up speaking listeners and subscribes to users
   session.start(connection, interaction.guild);
+
+  // Fire start callbacks (e.g., Firestore session tracker)
+  const initialParticipants = voiceChannel.members
+    .filter((m) => !m.user.bot)
+    .map((m) => m.displayName);
+  for (const cb of onStartCallbacks) {
+    try {
+      cb(session);
+    } catch (err) {
+      logger.error('Post-recording-start callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // Also fire initial participant snapshot
+  fireParticipantChangeCallbacks(guildId, initialParticipants);
 
   // If the connection is lost (kicked, network failure), auto-stop and save
   session.onConnectionLost = () => {

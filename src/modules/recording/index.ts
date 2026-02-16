@@ -11,7 +11,9 @@ import {
   getActiveSessions,
   stopRecording,
   performStop,
+  fireParticipantChangeCallbacks,
 } from './commands/record.js';
+import { initSessionTracker, cleanupInterruptedSessions, shutdownSessionTracker } from './firestore-tracker.js';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -47,10 +49,12 @@ export const recordingModule: BotModule = {
           // Check if channel is now empty (no non-bot users) → start idle timer
           const channel = client.channels.cache.get(recordingChannelId);
           if (channel?.type === ChannelType.GuildVoice || channel?.type === ChannelType.GuildStageVoice) {
-            const nonBotMembers = channel.members.filter((m) => !m.user.bot).size;
-            if (nonBotMembers === 0) {
+            const nonBotMembers = channel.members.filter((m) => !m.user.bot);
+            if (nonBotMembers.size === 0) {
               startIdleTimer(oldGuildId);
             }
+            // Notify participant change
+            fireParticipantChangeCallbacks(oldGuildId, nonBotMembers.map((m) => m.displayName));
           }
         }
       }
@@ -68,6 +72,13 @@ export const recordingModule: BotModule = {
             session.reattachUser(userId);
           }
           // If they don't have a track yet, the speaking event handler will create one
+
+          // Notify participant change
+          const channel = client.channels.cache.get(recordingChannelId);
+          if (channel?.type === ChannelType.GuildVoice || channel?.type === ChannelType.GuildStageVoice) {
+            const participants = channel.members.filter((m) => !m.user.bot).map((m) => m.displayName);
+            fireParticipantChangeCallbacks(newGuildId, participants);
+          }
         }
       }
     });
@@ -89,6 +100,21 @@ export const recordingModule: BotModule = {
       const connection = getVoiceConnection(guild.id);
       if (connection) connection.destroy();
     }
+
+    // Initialize Firestore session tracker if Firebase is configured
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        const { initFirestore } = await import('../standin/firestore.js');
+        const db = initFirestore();
+        initSessionTracker(db);
+        await cleanupInterruptedSessions();
+      } catch (err) {
+        logger.warn('Firestore session tracker not started — Firebase init failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     logger.info('Recording module loaded');
   },
 
@@ -97,6 +123,10 @@ export const recordingModule: BotModule = {
     for (const [guildId] of idleTimers) {
       cancelIdleTimer(guildId);
     }
+
+    // Mark tracked sessions as completed in Firestore before stopping
+    await shutdownSessionTracker();
+
     // Stop all active recordings
     const sessions = getActiveSessions();
     for (const [guildId] of sessions) {
