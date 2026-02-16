@@ -202,8 +202,10 @@ function forceLeaveVoice(connection: VoiceConnection, guildId: string, guild: Gu
     try { lingering.destroy(); } catch { /* already destroyed */ }
   }
   // Gateway-level disconnect — prevents zombie state
+  // voice.disconnect() returns a Promise and requires MOVE_MEMBERS permission,
+  // so catch both sync and async errors
   try {
-    guild.members.me?.voice.disconnect();
+    guild.members.me?.voice.disconnect().catch(() => {});
   } catch {
     // Best effort
   }
