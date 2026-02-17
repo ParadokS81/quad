@@ -173,31 +173,7 @@ export async function runFastPipeline(
     await writeStatus(processedDir, makeStatus(sessionId, 'parsing', 'Reading session metadata', { startedAt }));
     logger.info('Fast pipeline started', { sessionId, sessionDir });
 
-    // Stage 2: Query QW Hub
-    await writeStatus(processedDir, makeStatus(sessionId, 'querying', 'Querying QW Hub API', { startedAt }));
-
-    const recordingStart = new Date(session.recording_start_time);
-    const recordingEnd = new Date(session.recording_end_time);
-    const durationSec = (recordingEnd.getTime() - recordingStart.getTime()) / 1000;
-
-    const hub = new QWHubClient();
-    let hubMatches: import('./types.js').HubMatch[];
-    try {
-      hubMatches = await hub.findMatchesForSession(
-        session.recording_start_time,
-        durationSec,
-        config.playerQuery || undefined,
-      );
-    } catch (err) {
-      logger.warn('Hub API query failed — continuing without match data', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      hubMatches = [];
-    } finally {
-      hub.close();
-    }
-
-    // Look up bot registration for team tag + player mapping
+    // Look up bot registration for team tag + player mapping (before Hub query so we can build dynamic player filter)
     let teamTag = session.team?.tag ?? '';
     let knownPlayers: Record<string, string> = {};
     try {
@@ -218,6 +194,41 @@ export async function runFastPipeline(
       logger.warn('Failed to look up registration — continuing with session metadata only', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // Stage 2: Query QW Hub
+    await writeStatus(processedDir, makeStatus(sessionId, 'querying', 'Querying QW Hub API', { startedAt }));
+
+    const recordingStart = new Date(session.recording_start_time);
+    const recordingEnd = new Date(session.recording_end_time);
+    const durationSec = (recordingEnd.getTime() - recordingStart.getTime()) / 1000;
+
+    // Build dynamic player query from registered players (replaces static PLAYER_QUERY env var)
+    // Supabase FTS supports OR with pipe: "nasander|pkk|scenic"
+    const registeredNames = Object.values(knownPlayers).filter(Boolean);
+    const playerQuery = registeredNames.length > 0
+      ? registeredNames.join('|')
+      : config.playerQuery || undefined;
+
+    if (playerQuery) {
+      logger.info('Hub player query', { playerQuery, source: registeredNames.length > 0 ? 'registration' : 'env' });
+    }
+
+    const hub = new QWHubClient();
+    let hubMatches: import('./types.js').HubMatch[];
+    try {
+      hubMatches = await hub.findMatchesForSession(
+        session.recording_start_time,
+        durationSec,
+        playerQuery,
+      );
+    } catch (err) {
+      logger.warn('Hub API query failed — continuing without match data', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      hubMatches = [];
+    } finally {
+      hub.close();
     }
 
     // Stage 3: Pair matches + fetch ktxstats
