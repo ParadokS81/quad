@@ -101,7 +101,12 @@ export function pairMatches(
     const ktxDateStr = ktxstats?.date as string | undefined;
     if (ktxDateStr) {
       // Exact end time from ktxstats
-      const ktxEnd = new Date(ktxDateStr.replace(' +0000', 'Z').replace(' ', 'T'));
+      // Format: "2026-02-17 20:58:51 +0100" → "2026-02-17T20:58:51+01:00"
+      const ktxEnd = new Date(
+        ktxDateStr
+          .replace(' ', 'T')                              // date-time separator
+          .replace(/ ([+-])(\d{2})(\d{2})$/, '$1$2:$3'),  // " +0100" → "+01:00"
+      );
       audioEnd = (ktxEnd.getTime() - recordingStart.getTime()) / 1000;
       duration = audioEnd - audioStart;
 
