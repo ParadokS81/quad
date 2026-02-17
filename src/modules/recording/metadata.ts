@@ -3,6 +3,7 @@ import { type RecordingSession } from './session.js';
 import { type TrackMetadata } from './track.js';
 import { loadConfig } from '../../core/config.js';
 import { logger } from '../../core/logger.js';
+import { getRegistrationForGuild } from '../registration/register.js';
 
 interface SessionMetadata {
   schema_version: number;
@@ -36,12 +37,28 @@ export async function writeSessionMetadata(
     tracks,
   };
 
-  // Only include team if configured
-  if (config.teamTag) {
-    metadata.team = {
-      tag: config.teamTag,
-      name: config.teamName || session.guildName,
-    };
+  // Look up guild registration for team info (falls back to env vars)
+  try {
+    const registration = await getRegistrationForGuild(session.guildId);
+    if (registration) {
+      metadata.team = {
+        tag: registration.teamTag,
+        name: registration.teamName || session.guildName,
+      };
+    } else if (config.teamTag) {
+      metadata.team = {
+        tag: config.teamTag,
+        name: config.teamName || session.guildName,
+      };
+    }
+  } catch {
+    // Firestore unavailable — fall back to env vars
+    if (config.teamTag) {
+      metadata.team = {
+        tag: config.teamTag,
+        name: config.teamName || session.guildName,
+      };
+    }
   }
 
   const filePath = `${session.outputDir}/session_metadata.json`;
