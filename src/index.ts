@@ -6,6 +6,7 @@ import { recordingModule } from './modules/recording/index.js';
 import { processingModule } from './modules/processing/index.js';
 import { standinModule } from './modules/standin/index.js';
 import { registrationModule } from './modules/registration/index.js';
+import { schedulerModule } from './modules/scheduler/index.js';
 import { isRecording, getActiveSessions } from './modules/recording/commands/record.js';
 
 const config = loadConfig();
@@ -55,7 +56,7 @@ process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 // Start with all modules
-start(config, [recordingModule, processingModule, standinModule, registrationModule]).catch((err) => {
+start(config, [recordingModule, processingModule, standinModule, registrationModule, schedulerModule]).catch((err) => {
   logger.error('Failed to start bot', {
     error: err instanceof Error ? err.message : String(err),
   });

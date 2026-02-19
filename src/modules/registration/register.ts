@@ -11,7 +11,7 @@
  * QW Hub matches belong to this team.
  */
 
-import { ChatInputCommandInteraction, Guild, MessageFlags } from 'discord.js';
+import { ChatInputCommandInteraction, ChannelType, Guild, MessageFlags } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
 
@@ -107,11 +107,29 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     knownPlayers = await buildKnownPlayers(data.teamId, guild);
   }
 
-  // Activate the registration with the player mapping
+  // Build available channels list for MatchScheduler dropdown
+  let availableChannels: Array<{ id: string; name: string }> = [];
+  if (guild) {
+    try {
+      const channels = await guild.channels.fetch();
+      availableChannels = channels
+        .filter(ch => ch !== null && ch.type === ChannelType.GuildText)
+        .map(ch => ({ id: ch!.id, name: ch!.name }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch (err) {
+      logger.warn('Failed to fetch channels during registration', {
+        guildId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Activate the registration with the player mapping and available channels
   await doc.ref.update({
     guildId,
     guildName,
     knownPlayers,
+    availableChannels,
     status: 'active',
     activatedAt: new Date(),
     updatedAt: new Date(),
