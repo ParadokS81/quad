@@ -11,7 +11,7 @@
  * QW Hub matches belong to this team.
  */
 
-import { ChatInputCommandInteraction, ChannelType, Guild, MessageFlags } from 'discord.js';
+import { ChatInputCommandInteraction, ChannelType, Guild, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
 
@@ -108,13 +108,22 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
   }
 
   // Build available channels list for MatchScheduler dropdown
-  let availableChannels: Array<{ id: string; name: string }> = [];
+  let availableChannels: Array<{ id: string; name: string; canPost: boolean }> = [];
   if (guild) {
     try {
       const channels = await guild.channels.fetch();
+      const me = guild.members.me;
       availableChannels = channels
         .filter(ch => ch !== null && ch.type === ChannelType.GuildText)
-        .map(ch => ({ id: ch!.id, name: ch!.name }))
+        .map(ch => {
+          let canPost = false;
+          if (me && ch) {
+            const perms = ch.permissionsFor(me);
+            canPost = perms.has(PermissionFlagsBits.SendMessages)
+              && perms.has(PermissionFlagsBits.EmbedLinks);
+          }
+          return { id: ch!.id, name: ch!.name, canPost };
+        })
         .sort((a, b) => a.name.localeCompare(b.name));
     } catch (err) {
       logger.warn('Failed to fetch channels during registration', {

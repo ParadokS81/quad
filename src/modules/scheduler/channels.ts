@@ -3,25 +3,35 @@
  * so the MatchScheduler Discord settings dropdown has data.
  */
 
-import { type Client, ChannelType } from 'discord.js';
+import { type Client, ChannelType, PermissionFlagsBits } from 'discord.js';
 import { type Firestore } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
 
 interface ChannelInfo {
   id: string;
   name: string;
+  canPost: boolean;
 }
 
 /**
- * Get all text channels the bot can see in a guild.
+ * Get all text channels the bot can see in a guild, with posting permission info.
  */
 async function getTextChannels(client: Client, guildId: string): Promise<ChannelInfo[]> {
   const guild = await client.guilds.fetch(guildId);
   const channels = await guild.channels.fetch();
+  const me = guild.members.me;
 
   return channels
     .filter(ch => ch !== null && ch.type === ChannelType.GuildText)
-    .map(ch => ({ id: ch!.id, name: ch!.name }))
+    .map(ch => {
+      let canPost = false;
+      if (me && ch) {
+        const perms = ch.permissionsFor(me);
+        canPost = perms.has(PermissionFlagsBits.SendMessages)
+          && perms.has(PermissionFlagsBits.EmbedLinks);
+      }
+      return { id: ch!.id, name: ch!.name, canPost };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
