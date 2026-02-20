@@ -44,13 +44,15 @@ const COLORS = {
     headerBg:       '#232440',
 };
 
+// Maximally distinguishable colors from MatchScheduler's color picker,
+// ordered so the first 4 have best contrast against each other and the dark bg.
 const PLAYER_COLORS = [
-    '#E06666',  // Red
-    '#FFD966',  // Yellow
-    '#93C47D',  // Green
-    '#76A5AF',  // Teal
-    '#6D9EEB',  // Blue
-    '#C27BA0',  // Pink
+    '#FF0000',  // Red       — high contrast, unmistakable
+    '#00FF00',  // Green     — max distance from red
+    '#6D9EEB',  // Blue      — softer than #0000FF for readability on dark bg
+    '#FFFF00',  // Yellow    — bright, distinct from all above
+    '#FF00FF',  // Magenta   — distinct from green/blue
+    '#00FFFF',  // Cyan      — distinct from red/magenta
 ];
 
 function getColorForUser(userId: string): string {
@@ -250,35 +252,51 @@ function drawCell(
 
     if (players.length === 0) return;
 
-    // Draw player initials (first character only), each in their unique color
+    // Draw player initials clustered in center with fixed gaps (like MatchScheduler)
     const MAX_SHOWN = 5;
     const toShow = players.slice(0, MAX_SHOWN);
     const hasOverflow = players.length > MAX_SHOWN;
-
-    // Space initials evenly — use center region of cell (80%) for breathing room
-    const margin = w * 0.1;
-    const usableW = w - 2 * margin;
-    const slotCount = hasOverflow ? MAX_SHOWN + 1 : toShow.length;
-    const spacing = slotCount > 1 ? usableW / (slotCount - 1) : 0;
-    const startX = slotCount > 1 ? x + margin : x + w / 2;
 
     ctx.font = 'bold 14px sans-serif';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
 
-    toShow.forEach((userId, i) => {
-        const initial = (input.roster[userId]?.initials ?? '?')[0];
-        ctx.fillStyle = getColorForUser(userId);
-        ctx.fillText(initial, startX + spacing * i, y + CELL_H / 2);
-    });
+    // Measure each initial to compute total cluster width
+    const GAP = 4; // ~3.2px in MatchScheduler (0.2rem), slightly more for canvas
+    const initials = toShow.map(userId => ({
+        char: (input.roster[userId]?.initials ?? '?')[0],
+        color: getColorForUser(userId),
+    }));
+    const widths = initials.map(i => ctx.measureText(i.char).width);
+    let totalW = widths.reduce((s, w2) => s + w2, 0) + GAP * (widths.length - 1);
+
+    // Add overflow badge width if needed
+    let overflowW = 0;
+    if (hasOverflow) {
+        ctx.font = '10px sans-serif';
+        overflowW = ctx.measureText(`+${players.length - MAX_SHOWN}`).width;
+        totalW += GAP + overflowW;
+        ctx.font = 'bold 14px sans-serif';
+    }
+
+    // Center the cluster in the cell
+    let drawX = x + (w - totalW) / 2;
+
+    for (let i = 0; i < initials.length; i++) {
+        ctx.fillStyle = initials[i].color;
+        ctx.textAlign = 'left';
+        ctx.fillText(initials[i].char, drawX, y + CELL_H / 2);
+        drawX += widths[i] + GAP;
+    }
 
     if (hasOverflow) {
         ctx.fillStyle = COLORS.textSecondary;
         ctx.font = '10px sans-serif';
-        ctx.fillText(`+${players.length - MAX_SHOWN}`, startX + spacing * MAX_SHOWN, y + CELL_H / 2);
+        ctx.textAlign = 'left';
+        ctx.fillText(`+${players.length - MAX_SHOWN}`, drawX, y + CELL_H / 2);
     }
 
-    // Overflow badge: only show count when 5+ players
+    // Overflow count badge in top-right: only show for 5+ players
     if (players.length >= 5) {
         ctx.fillStyle = COLORS.textPrimary;
         ctx.font = '10px sans-serif';
