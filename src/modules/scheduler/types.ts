@@ -30,9 +30,11 @@ export interface ChallengeNotification {
   proposerTeamId: string;
   proposerTeamName: string;
   proposerTeamTag: string;
+  proposerLogoUrl: string | null;
   opponentTeamId: string;
   opponentTeamName: string;
   opponentTeamTag: string;
+  opponentLogoUrl: string | null;
   weekId: string;
   gameType: 'official' | 'practice';
   confirmedSlots: ConfirmedSlot[];
@@ -52,3 +54,85 @@ export interface ChallengeNotification {
     error?: string;
   };
 }
+
+export interface SlotConfirmedNotification {
+  type: 'slot_confirmed';
+  status: 'pending' | 'delivered' | 'failed';
+  proposalId: string;
+  slotId: string;
+  gameType: 'official' | 'practice';
+  weekId: string;
+  proposalUrl: string;
+  proposerLogoUrl: string | null;
+  opponentLogoUrl: string | null;
+  createdAt: Timestamp;
+  deliveredAt: Timestamp | null;
+  // Who confirmed
+  confirmedByTeamId: string;
+  confirmedByTeamName: string;
+  confirmedByTeamTag: string;
+  confirmedByUserId: string;
+  confirmedByDisplayName: string | null;
+  confirmedByDiscordId: string | null;
+  // For logo side determination
+  proposerTeamId: string;
+  // Who receives this notification
+  recipientTeamId: string;
+  recipientTeamName: string;
+  recipientTeamTag: string;
+  // Single delivery target (the recipient)
+  delivery: {
+    botRegistered: boolean;
+    notificationsEnabled: boolean;
+    channelId: string | null;
+    guildId: string | null;
+    leaderDiscordId: string | null;
+    leaderDisplayName: string | null;
+  };
+  deliveryResult?: {
+    channelSent: boolean;
+    dmSent: boolean;
+    error?: string;
+  };
+}
+
+export interface MatchSealedNotification {
+  type: 'match_sealed';
+  status: 'pending' | 'delivered' | 'failed';
+  proposalId: string;
+  scheduledMatchId: string;
+  slotId: string;
+  gameType: 'official' | 'practice';
+  weekId: string;
+  proposalUrl: string;
+  proposerLogoUrl: string | null;
+  opponentLogoUrl: string | null;
+  createdAt: Timestamp;
+  deliveredAt: Timestamp | null;
+  proposerTeamId: string;
+  proposerTeamName: string;
+  proposerTeamTag: string;
+  opponentTeamId: string;
+  opponentTeamName: string;
+  opponentTeamTag: string;
+  // Who receives this particular notification doc
+  recipientTeamId: string;
+  recipientTeamName: string;
+  recipientTeamTag: string;
+  // Single delivery target
+  delivery: {
+    botRegistered: boolean;
+    notificationsEnabled: boolean;
+    channelId: string | null;
+    guildId: string | null;
+  };
+  deliveryResult?: {
+    channelSent: boolean;
+    error?: string;
+  };
+}
+
+export type SchedulerNotification =
+  | ChallengeNotification
+  | SlotConfirmedNotification
+  | MatchSealedNotification;

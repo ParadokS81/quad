@@ -19,7 +19,7 @@ RUN npx tsc
 FROM node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg python3 python3-pip python3-venv \
+    ffmpeg python3 python3-pip python3-venv libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create venv for Python packages (Debian requires this)
