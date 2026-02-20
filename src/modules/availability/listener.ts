@@ -405,9 +405,10 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
         const scheduledMatches: Array<{ slotId: string; opponentTag: string }> = [];
         for (const doc of matchesSnap.docs) {
             const data = doc.data();
-            const opponentTag = data.proposerTeamId === teamId
-                ? String(data.opponentTeamTag ?? data.opponentTag ?? '?')
-                : String(data.proposerTeamTag ?? data.proposerTag ?? '?');
+            // Schema uses teamA/teamB — opponent is whichever side isn't us
+            const opponentTag = data.teamAId === teamId
+                ? String(data.teamBTag ?? '?')
+                : String(data.teamATag ?? '?');
 
             if (data.slotId) {
                 scheduledMatches.push({ slotId: String(data.slotId), opponentTag });

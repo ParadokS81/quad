@@ -3,9 +3,7 @@
  *
  * Handles:
  * - avail:editDay:{teamId}      — Day select menu on persistent message
- * - avail:editAnother:{teamId}  — Day select menu on confirmation ephemeral
  * - avail:editSlots:{teamId}:{cetDay} — Time slot multi-select on ephemeral
- * - avail:clearWeek:{teamId}    — "−Me This Week" button
  */
 
 import {
@@ -24,6 +22,7 @@ import {
     getWeekDates,
     cetToUtcSlotId,
     isDayPast,
+    isSlotPast,
     formatCetTime,
     CET_SLOT_TIMES,
 } from './time.js';
@@ -63,7 +62,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 export async function handleSelectMenu(interaction: StringSelectMenuInteraction): Promise<void> {
     const customId = interaction.customId;
 
-    if (customId.startsWith('avail:editDay:') || customId.startsWith('avail:editAnother:')) {
+    if (customId.startsWith('avail:editDay:')) {
         await handleDaySelect(interaction);
     } else if (customId.startsWith('avail:editSlots:')) {
         await handleSlotSelect(interaction);
@@ -96,11 +95,22 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
 
     const currentSlots = getCurrentUserSlots(teamId, user.uid, cetDay);
 
-    const options = CET_SLOT_TIMES.map(time => ({
-        label: `${formatCetTime(time)} CET`,
-        value: time,
-        default: currentSlots.includes(time),
-    }));
+    // Filter out past time slots for today, show all for future days
+    const options = CET_SLOT_TIMES
+        .filter(time => !isSlotPast(cetToUtcSlotId(cetDay, time), weekId))
+        .map(time => ({
+            label: `${formatCetTime(time)} CET`,
+            value: time,
+            default: currentSlots.includes(time),
+        }));
+
+    if (options.length === 0) {
+        await interaction.reply({
+            content: 'All time slots for this day have passed.',
+            flags: MessageFlags.Ephemeral,
+        });
+        return;
+    }
 
     const select = new StringSelectMenuBuilder()
         .setCustomId(`avail:editSlots:${teamId}:${cetDay}`)
@@ -138,6 +148,7 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
 
     if (toAdd.length === 0 && toRemove.length === 0) {
         await interaction.update({ content: 'No changes made.', components: [] });
+        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 3000);
         return;
     }
 
@@ -177,16 +188,16 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
 
     const addedStr = toAdd.map(t => formatCetTime(t)).join(', ');
     const removedStr = toRemove.map(t => formatCetTime(t)).join(', ');
-    let summary = `**${DAY_NAMES[cetDay] ?? capitalize(cetDay)}** updated\n`;
-    if (addedStr) summary += `Added: ${addedStr}\n`;
-    if (removedStr) summary += `Removed: ${removedStr}\n`;
+    let summary = `**${DAY_NAMES[cetDay] ?? capitalize(cetDay)}** updated`;
+    if (addedStr) summary += `\nAdded: ${addedStr}`;
+    if (removedStr) summary += `\nRemoved: ${removedStr}`;
 
-    const editAnother = buildDaySelectMenu(`avail:editAnother:${teamId}`);
+    await interaction.update({ content: summary, components: [] });
 
-    await interaction.update({
-        content: summary,
-        components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(editAnother)],
-    });
+    // Auto-delete confirmation after 5 seconds to keep channel clean
+    setTimeout(() => {
+        interaction.deleteReply().catch(() => {});
+    }, 5000);
 
     logger.info('Availability updated via Discord', {
         teamId, userId: user.uid, cetDay, added: toAdd.length, removed: toRemove.length,
@@ -303,11 +314,17 @@ export function buildDaySelectMenu(customId: string): StringSelectMenuBuilder {
     const weekId = getCurrentWeekId();
     const weekDates = getWeekDates(weekId);
 
-    const options = weekDates.map(({ day, date }) => {
-        const past = isDayPast(day, weekId);
-        const label = `${capitalize(day)} ${date}${getOrdinal(date)}${past ? ' (past)' : ''}`;
-        return { label, value: day };
-    });
+    const options = weekDates
+        .filter(({ day }) => !isDayPast(day, weekId))
+        .map(({ day, date }) => {
+            const label = `${capitalize(day)} ${date}${getOrdinal(date)}`;
+            return { label, value: day };
+        });
+
+    // Discord requires at least 1 option — if all days are past, show a placeholder
+    if (options.length === 0) {
+        options.push({ label: 'No days remaining', value: '_none' });
+    }
 
     return new StringSelectMenuBuilder()
         .setCustomId(customId)

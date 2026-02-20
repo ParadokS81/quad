@@ -11,8 +11,6 @@ import {
     AttachmentBuilder,
     type EmbedBuilder,
     ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
     type StringSelectMenuBuilder,
 } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
@@ -183,16 +181,8 @@ export async function updateMessage(
 
 // ── Action rows for the persistent message ──────────────────────────────────
 
-function buildActionRows(teamId: string): Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> {
-    const clearButton = new ButtonBuilder()
-        .setCustomId(`avail:clearWeek:${teamId}`)
-        .setLabel('\u2212Me This Week')
-        .setStyle(ButtonStyle.Secondary);
-
+function buildActionRows(teamId: string): Array<ActionRowBuilder<StringSelectMenuBuilder>> {
     const daySelect = buildDaySelectMenu(`avail:editDay:${teamId}`);
-
-    const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(clearButton);
-    const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(daySelect);
-
-    return [row1, row2];
+    const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(daySelect);
+    return [row];
 }
