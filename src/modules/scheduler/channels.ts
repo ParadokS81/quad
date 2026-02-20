@@ -50,10 +50,38 @@ export async function syncAllGuildChannels(db: Firestore, client: Client): Promi
 
     try {
       const channels = await getTextChannels(client, data.guildId);
-      await doc.ref.update({
+      const update: Record<string, unknown> = {
         availableChannels: channels,
         updatedAt: new Date(),
-      });
+      };
+
+      // Backfill default notification channel for existing registrations that don't have one
+      if (!data.notificationChannelId) {
+        const guild = await client.guilds.fetch(data.guildId);
+        const systemChannelId = guild.systemChannel?.id;
+        let defaultId: string | null = null;
+
+        if (systemChannelId) {
+          const match = channels.find(ch => ch.id === systemChannelId);
+          if (match?.canPost) defaultId = systemChannelId;
+        }
+        if (!defaultId) {
+          const firstPostable = channels.find(ch => ch.canPost);
+          if (firstPostable) defaultId = firstPostable.id;
+        }
+
+        if (defaultId) {
+          update.notificationChannelId = defaultId;
+          update.notificationsEnabled = true;
+          logger.info('Set default notification channel for guild', {
+            guildId: data.guildId,
+            teamId: data.teamId,
+            channelId: defaultId,
+          });
+        }
+      }
+
+      await doc.ref.update(update);
       logger.debug('Synced channels for guild', {
         guildId: data.guildId,
         teamId: data.teamId,
