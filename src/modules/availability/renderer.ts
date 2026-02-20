@@ -18,7 +18,6 @@ const CELL_H = 40;            // height of each time-row cell
 const GRID_TOP = HEADER_H + DAY_HEADER_H;   // y=60: where cells start
 const LEGEND_TOP = GRID_TOP + 9 * CELL_H;   // y=420: legend area
 const LEGEND_H = 24;          // legend row height
-const MATCHES_H = 18;         // matches info row height
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -95,21 +94,13 @@ interface RenderInput {
         slotId: string;
         opponentTag: string;
     }>;
-    matchesFormatted?: Array<{
-        opponentTag: string;
-        scheduledDate: string;
-    }>;
     now: Date;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function renderGrid(input: RenderInput): Promise<Buffer> {
-    // Dynamic height: base + legend + optional matches rows
-    const matchCount = input.matchesFormatted?.length ?? 0;
-    const footerH = LEGEND_H + (matchCount > 0 ? MATCHES_H * matchCount + 6 : 0) + 8;
-    const H = LEGEND_TOP + footerH;
-
+    const H = LEGEND_TOP + LEGEND_H + 8;
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
 
@@ -143,8 +134,8 @@ export async function renderGrid(input: RenderInput): Promise<Buffer> {
     }
     ctx.globalAlpha = 1.0;
 
-    // 6. Footer: legend + matches
-    drawFooter(ctx, input, H);
+    // 6. Legend
+    drawLegend(ctx, input, H);
 
     return canvas.toBuffer('image/png');
 }
@@ -294,9 +285,9 @@ function drawCell(
     }
 }
 
-// ── Footer (legend + matches) ────────────────────────────────────────────────
+// ── Legend ────────────────────────────────────────────────────────────────────
 
-function drawFooter(ctx: SKRSContext2D, input: RenderInput, canvasH: number): void {
+function drawLegend(ctx: SKRSContext2D, input: RenderInput, canvasH: number): void {
     ctx.fillStyle = COLORS.headerBg;
     ctx.fillRect(0, LEGEND_TOP, W, canvasH - LEGEND_TOP);
 
@@ -304,54 +295,37 @@ function drawFooter(ctx: SKRSContext2D, input: RenderInput, canvasH: number): vo
     ctx.fillStyle = COLORS.cellBorder;
     ctx.fillRect(0, LEGEND_TOP, W, 1);
 
-    // ── Legend row ──
     const entries = Object.entries(input.roster);
+    if (entries.length === 0) return;
+
     const legendY = LEGEND_TOP + LEGEND_H / 2 + 2;
+    const GAP = 24;
 
-    if (entries.length > 0) {
-        const GAP = 24;
-        const measured = entries.map(([userId, member]) => {
-            ctx.font = '12px sans-serif';
-            const nameW = ctx.measureText(member.displayName).width;
-            ctx.font = 'bold 13px sans-serif';
-            const initW = ctx.measureText(member.initials[0] ?? '?').width;
-            return { userId, member, nameW, initW };
-        });
+    const measured = entries.map(([userId, member]) => {
+        ctx.font = '12px sans-serif';
+        const nameW = ctx.measureText(member.displayName).width;
+        ctx.font = 'bold 13px sans-serif';
+        const initW = ctx.measureText(member.initials[0] ?? '?').width;
+        return { userId, member, nameW, initW };
+    });
 
-        const totalW = measured.reduce((sum, m, i) =>
-            sum + m.initW + 5 + m.nameW + (i < measured.length - 1 ? GAP : 0), 0);
+    const totalW = measured.reduce((sum, m, i) =>
+        sum + m.initW + 5 + m.nameW + (i < measured.length - 1 ? GAP : 0), 0);
 
-        let x = Math.max(8, (W - totalW) / 2);
+    let x = Math.max(8, (W - totalW) / 2);
 
-        ctx.textBaseline = 'middle';
-        ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
 
-        for (const { userId, member, nameW, initW } of measured) {
-            ctx.font = 'bold 13px sans-serif';
-            ctx.fillStyle = getColorForUser(userId);
-            ctx.fillText(member.initials[0] ?? '?', x, legendY);
-            x += initW + 5;
+    for (const { userId, member, nameW, initW } of measured) {
+        ctx.font = 'bold 13px sans-serif';
+        ctx.fillStyle = getColorForUser(userId);
+        ctx.fillText(member.initials[0] ?? '?', x, legendY);
+        x += initW + 5;
 
-            ctx.font = '12px sans-serif';
-            ctx.fillStyle = COLORS.textSecondary;
-            ctx.fillText(member.displayName, x, legendY);
-            x += nameW + GAP;
-        }
-    }
-
-    // ── Matches rows ──
-    const matches = input.matchesFormatted ?? [];
-    if (matches.length > 0) {
-        let y = LEGEND_TOP + LEGEND_H + 4;
-
-        ctx.textBaseline = 'middle';
-        ctx.textAlign = 'center';
-        ctx.font = '11px sans-serif';
-
-        for (const match of matches) {
-            ctx.fillStyle = COLORS.textSecondary;
-            ctx.fillText(`\u2694 vs ${match.opponentTag} \u2014 ${match.scheduledDate}`, W / 2, y + MATCHES_H / 2);
-            y += MATCHES_H;
-        }
+        ctx.font = '12px sans-serif';
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText(member.displayName, x, legendY);
+        x += nameW + GAP;
     }
 }

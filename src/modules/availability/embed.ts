@@ -1,8 +1,7 @@
 /**
  * Embed builder for the persistent schedule message.
  *
- * Builds the text embed shown below the canvas-rendered grid image.
- * Shows team info, upcoming matches, and active proposals.
+ * Builds a minimal embed with clickable match links shown below the grid image.
  */
 
 import { EmbedBuilder } from 'discord.js';
@@ -40,44 +39,21 @@ export function formatScheduledDate(slotId: string, weekId: string): string {
     return `${DAY_LABELS[cetDay] ?? cetDay} ${dateInfo.date}${getOrdinal(dateInfo.date)} ${cetTime} CET`;
 }
 
-export function buildScheduleEmbed(
-    teamTag: string,
-    weekId: string,
-    scheduledMatches: Array<{ opponentTag: string; slotId: string; scheduledDate: string }>,
-    activeProposals: Array<{ opponentTag: string; viableSlots: number }>,
+const SCHEDULER_BASE = 'https://scheduler.quake.world';
+
+/**
+ * Build a minimal embed with clickable match links.
+ * Only used when there are scheduled matches — returns a compact embed
+ * with one line per match linking to the H2H page.
+ */
+export function buildMatchLinksEmbed(
+    teamId: string,
+    matches: Array<{ opponentTag: string; opponentId: string; scheduledDate: string }>,
 ): EmbedBuilder {
-    const weekNum = parseInt(weekId.split('-')[1] ?? '0', 10);
-    const weekDates = getWeekDates(weekId);
-    const first = weekDates[0];
-    const last = weekDates[6];
-
-    const dateRange = first && last
-        ? (first.month === last.month
-            ? `${first.month} ${first.date}\u2013${last.date}`
-            : `${first.month} ${first.date} \u2013 ${last.month} ${last.date}`)
-        : '';
-
-    const lines: string[] = [];
-    lines.push(`**${teamTag}** \u00b7 Week ${weekNum} \u00b7 ${dateRange}`);
-
-    if (scheduledMatches.length > 0) {
-        lines.push('');
-        lines.push('\ud83d\udccb **MATCHES**');
-        for (const match of scheduledMatches) {
-            lines.push(`  vs ${match.opponentTag} \u2014 ${match.scheduledDate}`);
-        }
-    }
-
-    if (activeProposals.length > 0) {
-        lines.push('');
-        lines.push('\ud83d\udce8 **PROPOSALS**');
-        for (const proposal of activeProposals) {
-            lines.push(`  vs ${proposal.opponentTag} \u2014 ${proposal.viableSlots} viable slot${proposal.viableSlots !== 1 ? 's' : ''}`);
-        }
-    }
-
-    lines.push('');
-    lines.push('Updated just now');
+    const lines = matches.map(m => {
+        const url = `${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${m.opponentId}`;
+        return `\u2694 [vs ${m.opponentTag}](${url}) \u2014 ${m.scheduledDate}`;
+    });
 
     return new EmbedBuilder()
         .setDescription(lines.join('\n'))

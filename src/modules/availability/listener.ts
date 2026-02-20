@@ -17,7 +17,7 @@ import { logger } from '../../core/logger.js';
 import { type AvailabilityData, type TeamInfo, type RosterMember } from './types.js';
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
-import { formatScheduledDate } from './embed.js';
+import { buildMatchLinksEmbed, formatScheduledDate } from './embed.js';
 import { postOrRecoverMessage, updateMessage } from './message.js';
 
 // ── Per-team state ───────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ interface TeamState {
     debounceTimer: ReturnType<typeof setTimeout> | null;
     lastAvailability: AvailabilityData | null;
     teamInfo: TeamInfo | null;
-    scheduledMatches: Array<{ slotId: string; opponentTag: string }>;
+    scheduledMatches: Array<{ slotId: string; opponentTag: string; opponentId: string }>;
     activeProposals: Array<{ opponentTag: string; viableSlots: number }>;
 }
 
@@ -280,13 +280,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
     const now = new Date();
     const weekDates = getWeekDates(state.weekId);
 
-    // Format scheduled matches for canvas footer
-    const matchesFormatted = state.scheduledMatches.map(m => ({
-        opponentTag: m.opponentTag,
-        scheduledDate: formatScheduledDate(m.slotId, state.weekId),
-    }));
-
-    // Render canvas grid (includes matches in footer)
+    // Render canvas grid
     let imageBuffer: Buffer;
     try {
         imageBuffer = await renderGrid({
@@ -297,7 +291,6 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             unavailable: state.lastAvailability?.unavailable,
             roster: state.teamInfo.roster,
             scheduledMatches: state.scheduledMatches,
-            matchesFormatted,
             now,
         });
     } catch (err) {
@@ -307,21 +300,31 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         return;
     }
 
-    // Post or update the Discord message (image-only, no embed)
+    // Build match links embed (only if there are scheduled matches)
+    const matchLinks = state.scheduledMatches.map(m => ({
+        opponentTag: m.opponentTag,
+        opponentId: m.opponentId,
+        scheduledDate: formatScheduledDate(m.slotId, state.weekId),
+    }));
+    const embed = matchLinks.length > 0
+        ? buildMatchLinksEmbed(teamId, matchLinks)
+        : null;
+
+    // Post or update the Discord message
     try {
         if (state.messageId) {
             const result = await updateMessage(
-                botClient, state.channelId, state.messageId, teamId, imageBuffer,
+                botClient, state.channelId, state.messageId, teamId, imageBuffer, embed,
             );
             if (result === null) {
                 const newId = await postOrRecoverMessage(
-                    botClient, state.channelId, teamId, imageBuffer,
+                    botClient, state.channelId, teamId, imageBuffer, embed,
                 );
                 state.messageId = newId;
             }
         } else {
             const newId = await postOrRecoverMessage(
-                botClient, state.channelId, teamId, imageBuffer,
+                botClient, state.channelId, teamId, imageBuffer, embed,
             );
             state.messageId = newId;
         }
@@ -393,16 +396,20 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
 
         const prevMatchCount = state.scheduledMatches.length;
 
-        const scheduledMatches: Array<{ slotId: string; opponentTag: string }> = [];
+        const scheduledMatches: Array<{ slotId: string; opponentTag: string; opponentId: string }> = [];
         for (const doc of matchesSnap.docs) {
             const data = doc.data();
             // Schema uses teamA/teamB — opponent is whichever side isn't us
-            const opponentTag = data.teamAId === teamId
+            const isTeamA = data.teamAId === teamId;
+            const opponentTag = isTeamA
                 ? String(data.teamBTag ?? '?')
                 : String(data.teamATag ?? '?');
+            const opponentId = isTeamA
+                ? String(data.teamBId ?? '')
+                : String(data.teamAId ?? '');
 
             if (data.slotId) {
-                scheduledMatches.push({ slotId: String(data.slotId), opponentTag });
+                scheduledMatches.push({ slotId: String(data.slotId), opponentTag, opponentId });
             }
         }
 
