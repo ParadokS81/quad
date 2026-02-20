@@ -8,7 +8,7 @@
  * - A scheduled matches poll (every 5 minutes)
  *
  * On each render: weekly rollover check, team info refresh, canvas render,
- * embed build, and Discord message post/update.
+ * and Discord message post/update.
  */
 
 import { type Client } from 'discord.js';
@@ -17,7 +17,7 @@ import { logger } from '../../core/logger.js';
 import { type AvailabilityData, type TeamInfo, type RosterMember } from './types.js';
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
-import { buildScheduleEmbed, formatScheduledDate } from './embed.js';
+import { formatScheduledDate } from './embed.js';
 import { postOrRecoverMessage, updateMessage } from './message.js';
 
 // ── Per-team state ───────────────────────────────────────────────────────────
@@ -280,7 +280,13 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
     const now = new Date();
     const weekDates = getWeekDates(state.weekId);
 
-    // Render canvas grid
+    // Format scheduled matches for canvas footer
+    const matchesFormatted = state.scheduledMatches.map(m => ({
+        opponentTag: m.opponentTag,
+        scheduledDate: formatScheduledDate(m.slotId, state.weekId),
+    }));
+
+    // Render canvas grid (includes matches in footer)
     let imageBuffer: Buffer;
     try {
         imageBuffer = await renderGrid({
@@ -291,6 +297,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             unavailable: state.lastAvailability?.unavailable,
             roster: state.teamInfo.roster,
             scheduledMatches: state.scheduledMatches,
+            matchesFormatted,
             now,
         });
     } catch (err) {
@@ -300,37 +307,21 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         return;
     }
 
-    // Format scheduled matches for embed
-    const formattedMatches = state.scheduledMatches.map(m => ({
-        opponentTag: m.opponentTag,
-        slotId: m.slotId,
-        scheduledDate: formatScheduledDate(m.slotId, state.weekId),
-    }));
-
-    // Build embed
-    const embed = buildScheduleEmbed(
-        state.teamInfo.teamTag,
-        state.weekId,
-        formattedMatches,
-        state.activeProposals,
-    );
-
-    // Post or update the Discord message
+    // Post or update the Discord message (image-only, no embed)
     try {
         if (state.messageId) {
             const result = await updateMessage(
-                botClient, state.channelId, state.messageId, teamId, imageBuffer, embed,
+                botClient, state.channelId, state.messageId, teamId, imageBuffer,
             );
             if (result === null) {
-                // Message gone — fall back to post/recover
                 const newId = await postOrRecoverMessage(
-                    botClient, state.channelId, teamId, imageBuffer, embed,
+                    botClient, state.channelId, teamId, imageBuffer,
                 );
                 state.messageId = newId;
             }
         } else {
             const newId = await postOrRecoverMessage(
-                botClient, state.channelId, teamId, imageBuffer, embed,
+                botClient, state.channelId, teamId, imageBuffer,
             );
             state.messageId = newId;
         }

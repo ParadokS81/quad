@@ -9,7 +9,6 @@ import {
     type Client,
     type TextChannel,
     AttachmentBuilder,
-    type EmbedBuilder,
     ActionRowBuilder,
     type StringSelectMenuBuilder,
 } from 'discord.js';
@@ -41,7 +40,6 @@ export async function postOrRecoverMessage(
     channelId: string,
     teamId: string,
     imageBuffer: Buffer,
-    embed: EmbedBuilder,
 ): Promise<string | null> {
     const db = getDb();
     const regDoc = await db.collection('botRegistrations').doc(teamId).get();
@@ -76,7 +74,7 @@ export async function postOrRecoverMessage(
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'schedule.png' });
 
     const components = buildActionRows(teamId);
-    const payload = { embeds: [embed], files: [attachment], components };
+    const payload = { embeds: [], files: [attachment], components };
 
     // If we have a stored message ID, try to edit it
     if (storedMessageId) {
@@ -125,7 +123,6 @@ export async function updateMessage(
     messageId: string,
     teamId: string,
     imageBuffer: Buffer,
-    embed: EmbedBuilder,
 ): Promise<string | null> {
     const db = getDb();
 
@@ -155,7 +152,7 @@ export async function updateMessage(
 
     try {
         const message = await channel.messages.fetch(messageId);
-        await message.edit({ embeds: [embed], files: [attachment], components });
+        await message.edit({ embeds: [], files: [attachment], components });
         return messageId;
     } catch (err) {
         const code = getDiscordErrorCode(err);

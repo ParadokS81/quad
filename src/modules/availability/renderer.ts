@@ -11,13 +11,14 @@ import { cetToUtcSlotId, isSlotPast } from './time.js';
 // ── Canvas dimensions ─────────────────────────────────────────────────────────
 
 const W = 800;
-const H = 480;
 const TIME_COL_W = 60;       // left column: time labels
 const HEADER_H = 35;          // top bar: team + week info
 const DAY_HEADER_H = 25;      // day column headers row
 const CELL_H = 40;            // height of each time-row cell
 const GRID_TOP = HEADER_H + DAY_HEADER_H;   // y=60: where cells start
 const LEGEND_TOP = GRID_TOP + 9 * CELL_H;   // y=420: legend area
+const LEGEND_H = 24;          // legend row height
+const MATCHES_H = 18;         // matches info row height
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -94,12 +95,21 @@ interface RenderInput {
         slotId: string;
         opponentTag: string;
     }>;
+    matchesFormatted?: Array<{
+        opponentTag: string;
+        scheduledDate: string;
+    }>;
     now: Date;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function renderGrid(input: RenderInput): Promise<Buffer> {
+    // Dynamic height: base + legend + optional matches rows
+    const matchCount = input.matchesFormatted?.length ?? 0;
+    const footerH = LEGEND_H + (matchCount > 0 ? MATCHES_H * matchCount + 6 : 0) + 8;
+    const H = LEGEND_TOP + footerH;
+
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
 
@@ -133,8 +143,8 @@ export async function renderGrid(input: RenderInput): Promise<Buffer> {
     }
     ctx.globalAlpha = 1.0;
 
-    // 6. Legend
-    drawLegend(ctx, input);
+    // 6. Footer: legend + matches
+    drawFooter(ctx, input, H);
 
     return canvas.toBuffer('image/png');
 }
@@ -284,52 +294,64 @@ function drawCell(
     }
 }
 
-// ── Legend ────────────────────────────────────────────────────────────────────
+// ── Footer (legend + matches) ────────────────────────────────────────────────
 
-function drawLegend(ctx: SKRSContext2D, input: RenderInput): void {
+function drawFooter(ctx: SKRSContext2D, input: RenderInput, canvasH: number): void {
     ctx.fillStyle = COLORS.headerBg;
-    ctx.fillRect(0, LEGEND_TOP, W, H - LEGEND_TOP);
+    ctx.fillRect(0, LEGEND_TOP, W, canvasH - LEGEND_TOP);
 
     // Separator line
     ctx.fillStyle = COLORS.cellBorder;
     ctx.fillRect(0, LEGEND_TOP, W, 1);
 
+    // ── Legend row ──
     const entries = Object.entries(input.roster);
-    if (entries.length === 0) return;
+    const legendY = LEGEND_TOP + LEGEND_H / 2 + 2;
 
-    const legendY = LEGEND_TOP + (H - LEGEND_TOP) / 2;
-    const GAP = 24; // horizontal gap between entries
+    if (entries.length > 0) {
+        const GAP = 24;
+        const measured = entries.map(([userId, member]) => {
+            ctx.font = '12px sans-serif';
+            const nameW = ctx.measureText(member.displayName).width;
+            ctx.font = 'bold 13px sans-serif';
+            const initW = ctx.measureText(member.initials[0] ?? '?').width;
+            return { userId, member, nameW, initW };
+        });
 
-    // Pre-measure all entries to compute total width for centering
-    const measured = entries.map(([userId, member]) => {
-        ctx.font = '12px sans-serif';
-        const nameW = ctx.measureText(member.displayName).width;
-        ctx.font = 'bold 13px sans-serif';
-        const initW = ctx.measureText(member.initials[0] ?? '?').width;
-        return { userId, member, nameW, initW };
-    });
+        const totalW = measured.reduce((sum, m, i) =>
+            sum + m.initW + 5 + m.nameW + (i < measured.length - 1 ? GAP : 0), 0);
 
-    const totalW = measured.reduce((sum, m, i) =>
-        sum + m.initW + 5 + m.nameW + (i < measured.length - 1 ? GAP : 0), 0);
+        let x = Math.max(8, (W - totalW) / 2);
 
-    let x = Math.max(8, (W - totalW) / 2);
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
 
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
+        for (const { userId, member, nameW, initW } of measured) {
+            ctx.font = 'bold 13px sans-serif';
+            ctx.fillStyle = getColorForUser(userId);
+            ctx.fillText(member.initials[0] ?? '?', x, legendY);
+            x += initW + 5;
 
-    for (const { userId, member, nameW, initW } of measured) {
-        const initial = member.initials[0] ?? '?';
+            ctx.font = '12px sans-serif';
+            ctx.fillStyle = COLORS.textSecondary;
+            ctx.fillText(member.displayName, x, legendY);
+            x += nameW + GAP;
+        }
+    }
 
-        // Colored initial
-        ctx.font = 'bold 13px sans-serif';
-        ctx.fillStyle = getColorForUser(userId);
-        ctx.fillText(initial, x, legendY);
-        x += initW + 5;
+    // ── Matches rows ──
+    const matches = input.matchesFormatted ?? [];
+    if (matches.length > 0) {
+        let y = LEGEND_TOP + LEGEND_H + 4;
 
-        // Display name
-        ctx.font = '12px sans-serif';
-        ctx.fillStyle = COLORS.textSecondary;
-        ctx.fillText(member.displayName, x, legendY);
-        x += nameW + GAP;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        ctx.font = '11px sans-serif';
+
+        for (const match of matches) {
+            ctx.fillStyle = COLORS.textSecondary;
+            ctx.fillText(`\u2694 vs ${match.opponentTag} \u2014 ${match.scheduledDate}`, W / 2, y + MATCHES_H / 2);
+            y += MATCHES_H;
+        }
     }
 }
