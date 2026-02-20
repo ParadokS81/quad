@@ -41,7 +41,6 @@ export async function postOrRecoverMessage(
     channelId: string,
     teamId: string,
     imageBuffer: Buffer,
-    embed?: EmbedBuilder | null,
 ): Promise<string | null> {
     const db = getDb();
     const regDoc = await db.collection('botRegistrations').doc(teamId).get();
@@ -76,7 +75,7 @@ export async function postOrRecoverMessage(
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'schedule.png' });
 
     const components = buildActionRows(teamId);
-    const payload = { embeds: embed ? [embed] : [], files: [attachment], components };
+    const payload = { embeds: [] as EmbedBuilder[], files: [attachment], components };
 
     // If we have a stored message ID, try to edit it
     if (storedMessageId) {
@@ -125,7 +124,6 @@ export async function updateMessage(
     messageId: string,
     teamId: string,
     imageBuffer: Buffer,
-    embed?: EmbedBuilder | null,
 ): Promise<string | null> {
     const db = getDb();
 
@@ -155,7 +153,7 @@ export async function updateMessage(
 
     try {
         const message = await channel.messages.fetch(messageId);
-        await message.edit({ embeds: embed ? [embed] : [], files: [attachment], components });
+        await message.edit({ embeds: [], files: [attachment], components });
         return messageId;
     } catch (err) {
         const code = getDiscordErrorCode(err);
@@ -175,6 +173,58 @@ export async function updateMessage(
         logger.error('Failed to edit schedule message', {
             teamId, messageId, error: err instanceof Error ? err.message : String(err),
         });
+        return null;
+    }
+}
+
+/**
+ * Post or update a separate matches message below the grid.
+ *
+ * If embed is null, deletes any existing matches message.
+ * Returns the matches message ID or null.
+ */
+export async function updateMatchesMessage(
+    client: Client,
+    channelId: string,
+    existingMessageId: string | null,
+    embed: EmbedBuilder | null,
+): Promise<string | null> {
+    let channel: TextChannel;
+    try {
+        const fetched = await client.channels.fetch(channelId);
+        if (!fetched || !fetched.isTextBased()) return null;
+        channel = fetched as TextChannel;
+    } catch {
+        return null;
+    }
+
+    // No matches — delete old message if it exists
+    if (!embed) {
+        if (existingMessageId) {
+            try {
+                const msg = await channel.messages.fetch(existingMessageId);
+                await msg.delete();
+            } catch { /* already gone */ }
+        }
+        return null;
+    }
+
+    // Try to edit existing
+    if (existingMessageId) {
+        try {
+            const msg = await channel.messages.fetch(existingMessageId);
+            await msg.edit({ embeds: [embed] });
+            return existingMessageId;
+        } catch {
+            // Message gone — fall through to post new
+        }
+    }
+
+    // Post new
+    try {
+        const newMsg = await channel.send({ embeds: [embed] });
+        return newMsg.id;
+    } catch {
         return null;
     }
 }

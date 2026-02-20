@@ -255,28 +255,31 @@ function drawCell(
     const toShow = players.slice(0, MAX_SHOWN);
     const hasOverflow = players.length > MAX_SHOWN;
 
-    // Space initials + optional overflow badge evenly across cell width
+    // Space initials evenly — use center region of cell (80%) for breathing room
+    const margin = w * 0.1;
+    const usableW = w - 2 * margin;
     const slotCount = hasOverflow ? MAX_SHOWN + 1 : toShow.length;
-    const spacing = w / (slotCount + 1);
+    const spacing = slotCount > 1 ? usableW / (slotCount - 1) : 0;
+    const startX = slotCount > 1 ? x + margin : x + w / 2;
 
-    ctx.font = 'bold 13px sans-serif';
+    ctx.font = 'bold 14px sans-serif';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
 
     toShow.forEach((userId, i) => {
         const initial = (input.roster[userId]?.initials ?? '?')[0];
         ctx.fillStyle = getColorForUser(userId);
-        ctx.fillText(initial, x + spacing * (i + 1), y + CELL_H / 2);
+        ctx.fillText(initial, startX + spacing * i, y + CELL_H / 2);
     });
 
     if (hasOverflow) {
         ctx.fillStyle = COLORS.textSecondary;
         ctx.font = '10px sans-serif';
-        ctx.fillText(`+${players.length - MAX_SHOWN}`, x + spacing * (MAX_SHOWN + 1), y + CELL_H / 2);
+        ctx.fillText(`+${players.length - MAX_SHOWN}`, startX + spacing * MAX_SHOWN, y + CELL_H / 2);
     }
 
-    // Match-ready badge: player count in top-right corner
-    if (players.length >= 4) {
+    // Overflow badge: only show count when 5+ players
+    if (players.length >= 5) {
         ctx.fillStyle = COLORS.textPrimary;
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'right';

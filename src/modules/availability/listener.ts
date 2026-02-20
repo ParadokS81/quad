@@ -18,7 +18,7 @@ import { type AvailabilityData, type TeamInfo, type RosterMember } from './types
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
 import { buildMatchLinksEmbed, formatScheduledDate } from './embed.js';
-import { postOrRecoverMessage, updateMessage } from './message.js';
+import { postOrRecoverMessage, updateMessage, updateMatchesMessage } from './message.js';
 
 // ── Per-team state ───────────────────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ interface TeamState {
     teamInfo: TeamInfo | null;
     scheduledMatches: Array<{ slotId: string; opponentTag: string; opponentId: string }>;
     activeProposals: Array<{ opponentTag: string; viableSlots: number }>;
+    matchesMessageId: string | null;
 }
 
 const activeTeams = new Map<string, TeamState>();
@@ -124,6 +125,7 @@ async function startTeamListener(
         teamInfo: null,
         scheduledMatches: [],
         activeProposals: [],
+        matchesMessageId: null,
     };
 
     activeTeams.set(teamId, state);
@@ -300,36 +302,48 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         return;
     }
 
-    // Build match links embed (only if there are scheduled matches)
-    const matchLinks = state.scheduledMatches.map(m => ({
-        opponentTag: m.opponentTag,
-        opponentId: m.opponentId,
-        scheduledDate: formatScheduledDate(m.slotId, state.weekId),
-    }));
-    const embed = matchLinks.length > 0
-        ? buildMatchLinksEmbed(teamId, matchLinks)
-        : null;
-
-    // Post or update the Discord message
+    // Post or update the grid message (image + dropdown only)
     try {
         if (state.messageId) {
             const result = await updateMessage(
-                botClient, state.channelId, state.messageId, teamId, imageBuffer, embed,
+                botClient, state.channelId, state.messageId, teamId, imageBuffer,
             );
             if (result === null) {
                 const newId = await postOrRecoverMessage(
-                    botClient, state.channelId, teamId, imageBuffer, embed,
+                    botClient, state.channelId, teamId, imageBuffer,
                 );
                 state.messageId = newId;
+                // Grid was re-posted — old matches message is now above it, delete it
+                state.matchesMessageId = null;
             }
         } else {
             const newId = await postOrRecoverMessage(
-                botClient, state.channelId, teamId, imageBuffer, embed,
+                botClient, state.channelId, teamId, imageBuffer,
             );
             state.messageId = newId;
         }
     } catch (err) {
         logger.error('Failed to update schedule message', {
+            teamId, error: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    // Post or update the matches message (separate, below the grid)
+    try {
+        const matchLinks = state.scheduledMatches.map(m => ({
+            opponentTag: m.opponentTag,
+            opponentId: m.opponentId,
+            scheduledDate: formatScheduledDate(m.slotId, state.weekId),
+        }));
+        const embed = matchLinks.length > 0
+            ? buildMatchLinksEmbed(teamId, matchLinks)
+            : null;
+
+        state.matchesMessageId = await updateMatchesMessage(
+            botClient, state.channelId, state.matchesMessageId, embed,
+        );
+    } catch (err) {
+        logger.error('Failed to update matches message', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
