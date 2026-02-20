@@ -76,15 +76,15 @@ export async function postOrRecoverMessage(
     }
 
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'schedule.png' });
-    embed.setImage('attachment://schedule.png');
 
     const components = buildActionRows(teamId);
+    const payload = { embeds: [embed], files: [attachment], components };
 
     // If we have a stored message ID, try to edit it
     if (storedMessageId) {
         try {
             const message = await channel.messages.fetch(storedMessageId);
-            await message.edit({ embeds: [embed], files: [attachment], components });
+            await message.edit(payload);
             return storedMessageId;
         } catch (err) {
             if (getDiscordErrorCode(err) !== UNKNOWN_MESSAGE) {
@@ -101,7 +101,7 @@ export async function postOrRecoverMessage(
 
     // Post new message
     try {
-        const newMessage = await channel.send({ embeds: [embed], files: [attachment], components });
+        const newMessage = await channel.send(payload);
         await db.collection('botRegistrations').doc(teamId).update({
             scheduleMessageId: newMessage.id,
         });
@@ -152,7 +152,6 @@ export async function updateMessage(
     }
 
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'schedule.png' });
-    embed.setImage('attachment://schedule.png');
 
     const components = buildActionRows(teamId);
 
