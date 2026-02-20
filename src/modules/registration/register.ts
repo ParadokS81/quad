@@ -133,12 +133,28 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     }
   }
 
-  // Activate the registration with the player mapping and available channels
+  // Pick a default notification channel: system channel if bot can post, else first postable channel
+  let defaultChannelId: string | null = null;
+  if (guild) {
+    const systemChannel = guild.systemChannel;
+    if (systemChannel) {
+      const match = availableChannels.find(ch => ch.id === systemChannel.id);
+      if (match?.canPost) defaultChannelId = systemChannel.id;
+    }
+    if (!defaultChannelId) {
+      const firstPostable = availableChannels.find(ch => ch.canPost);
+      if (firstPostable) defaultChannelId = firstPostable.id;
+    }
+  }
+
+  // Activate the registration with the player mapping, channels, and default notification channel
   await doc.ref.update({
     guildId,
     guildName,
     knownPlayers,
     availableChannels,
+    notificationChannelId: defaultChannelId,
+    notificationsEnabled: !!defaultChannelId,
     status: 'active',
     activatedAt: new Date(),
     updatedAt: new Date(),
