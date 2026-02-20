@@ -61,11 +61,12 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const teamId = doc.id;
         const channelId = data.scheduleChannelId as string | null;
         const messageId = data.scheduleMessageId as string | null;
+        const matchesMessageId = data.matchesMessageId as string | null;
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId);
+            await startTeamListener(teamId, channelId, messageId, matchesMessageId);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -102,6 +103,7 @@ async function startTeamListener(
     teamId: string,
     channelId: string,
     storedMessageId: string | null,
+    storedMatchesMessageId: string | null = null,
 ): Promise<void> {
     if (!firestoreDb || !botClient) return;
 
@@ -125,7 +127,7 @@ async function startTeamListener(
         teamInfo: null,
         scheduledMatches: [],
         activeProposals: [],
-        matchesMessageId: null,
+        matchesMessageId: storedMatchesMessageId ?? null,
     };
 
     activeTeams.set(teamId, state);
@@ -313,8 +315,11 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     botClient, state.channelId, teamId, imageBuffer,
                 );
                 state.messageId = newId;
-                // Grid was re-posted — old matches message is now above it, delete it
+                // Grid was re-posted — old matches message is now above it, reset it
                 state.matchesMessageId = null;
+                await firestoreDb!.collection('botRegistrations').doc(teamId).update({
+                    matchesMessageId: null,
+                });
             }
         } else {
             const newId = await postOrRecoverMessage(
@@ -339,9 +344,17 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             ? buildMatchLinksEmbed(teamId, matchLinks)
             : null;
 
-        state.matchesMessageId = await updateMatchesMessage(
+        const newMatchesMsgId = await updateMatchesMessage(
             botClient, state.channelId, state.matchesMessageId, embed,
         );
+
+        // Persist matchesMessageId to Firestore if it changed
+        if (newMatchesMsgId !== state.matchesMessageId) {
+            state.matchesMessageId = newMatchesMsgId;
+            await firestoreDb.collection('botRegistrations').doc(teamId).update({
+                matchesMessageId: newMatchesMsgId,
+            });
+        }
     } catch (err) {
         logger.error('Failed to update matches message', {
             teamId, error: err instanceof Error ? err.message : String(err),

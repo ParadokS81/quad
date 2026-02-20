@@ -138,11 +138,9 @@ export async function renderGrid(input: RenderInput): Promise<Buffer> {
             const utcSlotId = cetToUtcSlotId(cetDay, CET_SLOTS[row]);
             const isPast = isSlotPast(utcSlotId, input.weekId);
 
-            ctx.globalAlpha = isPast ? 0.3 : 1.0;
-            drawCell(ctx, row, col, utcSlotId, input, colorMap);
+            drawCell(ctx, row, col, utcSlotId, input, colorMap, isPast);
         }
     }
-    ctx.globalAlpha = 1.0;
 
     // 6. Legend
     drawLegend(ctx, input, H, colorMap);
@@ -233,10 +231,18 @@ function drawCell(
     utcSlotId: string,
     input: RenderInput,
     colorMap: Map<string, string>,
+    isPast: boolean,
 ): void {
     const x = colX(col);
     const y = GRID_TOP + row * CELL_H;
     const w = colW(col);
+
+    // Past cells: dim empty background, no content
+    if (isPast) {
+        ctx.fillStyle = COLORS.background;
+        ctx.fillRect(x + 1, y + 1, w - 2, CELL_H - 2);
+        return;
+    }
 
     const players = input.slots[utcSlotId] ?? [];
     const scheduledMatch = input.scheduledMatches.find(m => m.slotId === utcSlotId);
