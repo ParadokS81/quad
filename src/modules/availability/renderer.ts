@@ -55,13 +55,18 @@ const PLAYER_COLORS = [
     '#911EB4',  // Purple    — fills blue-magenta gap
 ];
 
-function getColorForUser(userId: string): string {
-    let hash = 0;
-    for (let i = 0; i < userId.length; i++) {
-        hash = ((hash << 5) - hash) + userId.charCodeAt(i);
-        hash |= 0;
+/** Build a userId → color map by assigning colors in roster order. */
+function buildColorMap(roster: Record<string, unknown>): Map<string, string> {
+    const map = new Map<string, string>();
+    const userIds = Object.keys(roster).sort(); // deterministic order
+    for (let i = 0; i < userIds.length; i++) {
+        map.set(userIds[i], PLAYER_COLORS[i % PLAYER_COLORS.length]);
     }
-    return PLAYER_COLORS[Math.abs(hash) % PLAYER_COLORS.length];
+    return map;
+}
+
+function getColorForUser(userId: string, colorMap: Map<string, string>): string {
+    return colorMap.get(userId) ?? PLAYER_COLORS[0];
 }
 
 // ── Column geometry helpers ───────────────────────────────────────────────────
@@ -106,6 +111,9 @@ export async function renderGrid(input: RenderInput): Promise<Buffer> {
     const canvas = createCanvas(W, H);
     const ctx = canvas.getContext('2d');
 
+    // Build color map: assign colors by sorted roster order (guarantees distinct colors)
+    const colorMap = buildColorMap(input.roster);
+
     // 1. Background
     ctx.fillStyle = COLORS.background;
     ctx.fillRect(0, 0, W, H);
@@ -131,13 +139,13 @@ export async function renderGrid(input: RenderInput): Promise<Buffer> {
             const isPast = isSlotPast(utcSlotId, input.weekId);
 
             ctx.globalAlpha = isPast ? 0.3 : 1.0;
-            drawCell(ctx, row, col, utcSlotId, input);
+            drawCell(ctx, row, col, utcSlotId, input, colorMap);
         }
     }
     ctx.globalAlpha = 1.0;
 
     // 6. Legend
-    drawLegend(ctx, input, H);
+    drawLegend(ctx, input, H, colorMap);
 
     return canvas.toBuffer('image/png');
 }
@@ -224,6 +232,7 @@ function drawCell(
     col: number,
     utcSlotId: string,
     input: RenderInput,
+    colorMap: Map<string, string>,
 ): void {
     const x = colX(col);
     const y = GRID_TOP + row * CELL_H;
@@ -265,7 +274,7 @@ function drawCell(
     const GAP = 4; // ~3.2px in MatchScheduler (0.2rem), slightly more for canvas
     const initials = toShow.map(userId => ({
         char: (input.roster[userId]?.initials ?? '?')[0],
-        color: getColorForUser(userId),
+        color: getColorForUser(userId, colorMap),
     }));
     const widths = initials.map(i => ctx.measureText(i.char).width);
     let totalW = widths.reduce((s, w2) => s + w2, 0) + GAP * (widths.length - 1);
@@ -308,7 +317,7 @@ function drawCell(
 
 // ── Legend ────────────────────────────────────────────────────────────────────
 
-function drawLegend(ctx: SKRSContext2D, input: RenderInput, canvasH: number): void {
+function drawLegend(ctx: SKRSContext2D, input: RenderInput, canvasH: number, colorMap: Map<string, string>): void {
     ctx.fillStyle = COLORS.headerBg;
     ctx.fillRect(0, LEGEND_TOP, W, canvasH - LEGEND_TOP);
 
@@ -340,7 +349,7 @@ function drawLegend(ctx: SKRSContext2D, input: RenderInput, canvasH: number): vo
 
     for (const { userId, member, nameW, initW } of measured) {
         ctx.font = 'bold 13px sans-serif';
-        ctx.fillStyle = getColorForUser(userId);
+        ctx.fillStyle = getColorForUser(userId, colorMap);
         ctx.fillText(member.initials[0] ?? '?', x, legendY);
         x += initW + 5;
 
