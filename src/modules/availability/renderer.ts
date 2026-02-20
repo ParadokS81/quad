@@ -44,15 +44,15 @@ const COLORS = {
     headerBg:       '#232440',
 };
 
-// Maximally distinguishable colors from MatchScheduler's color picker,
-// ordered so the first 4 have best contrast against each other and the dark bg.
+// Perceptually distinct colors optimized for dark backgrounds.
+// First 4 maximize visual separation; 5-6 fill remaining hue gaps.
 const PLAYER_COLORS = [
-    '#FF0000',  // Red       — high contrast, unmistakable
-    '#00FF00',  // Green     — max distance from red
-    '#6D9EEB',  // Blue      — softer than #0000FF for readability on dark bg
-    '#FFFF00',  // Yellow    — bright, distinct from all above
-    '#FF00FF',  // Magenta   — distinct from green/blue
-    '#00FFFF',  // Cyan      — distinct from red/magenta
+    '#E6194B',  // Red       — warm, unmistakable
+    '#3CB44B',  // Green     — natural green, max distance from red
+    '#4363D8',  // Blue      — readable on dark bg (not pure #0000FF)
+    '#FFE119',  // Yellow    — bright, distinct from all above
+    '#F58231',  // Orange    — warm, fills red-yellow gap
+    '#911EB4',  // Purple    — fills blue-magenta gap
 ];
 
 function getColorForUser(userId: string): string {
