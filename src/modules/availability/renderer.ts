@@ -19,7 +19,7 @@ const fontsDir = join(__dirname, '..', '..', '..', 'fonts');
 GlobalFonts.registerFromPath(join(fontsDir, 'Inter-Regular.ttf'), 'Inter');
 GlobalFonts.registerFromPath(join(fontsDir, 'Inter-Bold.ttf'), 'Inter');
 
-const FONT = 'Inter';
+export const FONT = 'Inter';
 
 // ── Canvas dimensions (sized to Discord's ~550px inline display width) ───────
 
@@ -45,7 +45,7 @@ const CET_SLOTS = ['1900', '1930', '2000', '2030', '2100', '2130', '2200', '2230
 
 // ── Color palette (matches MatchScheduler dark theme) ────────────────────────
 
-const COLORS = {
+export const COLORS = {
     background:     '#1a1b2e',
     cellEmpty:      '#2d2f45',
     cellBorder:     '#4a4d6a',

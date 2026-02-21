@@ -15,6 +15,7 @@ export interface TeamInfo {
     teamId: string;
     teamTag: string;
     teamName: string;
+    logoUrl: string | null;                 // activeLogo.urls.small from Firestore
     roster: Record<string, RosterMember>;   // userId → member info
 }
 
@@ -26,4 +27,23 @@ export interface RosterMember {
 export interface ScheduleChannelConfig {
     channelId: string;
     messageId: string | null;   // null until first message posted
+}
+
+/** Enriched match data for canvas rendering. */
+export interface ScheduledMatchDisplay {
+    slotId: string;
+    opponentTag: string;
+    opponentId: string;
+    opponentName: string;
+    gameType: 'official' | 'practice';
+    opponentLogoUrl: string | null;
+    scheduledDate: string;       // pre-formatted "Sun 22nd 21:30 CET"
+}
+
+/** Enriched proposal data for canvas rendering. */
+export interface ActiveProposalDisplay {
+    opponentTag: string;
+    opponentName: string;
+    viableSlots: number;
+    opponentLogoUrl: string | null;
 }

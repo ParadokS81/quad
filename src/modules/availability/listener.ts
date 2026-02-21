@@ -14,11 +14,16 @@
 import { type Client } from 'discord.js';
 import { type Firestore } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
-import { type AvailabilityData, type TeamInfo, type RosterMember } from './types.js';
+import {
+    type AvailabilityData, type TeamInfo, type RosterMember,
+    type ScheduledMatchDisplay, type ActiveProposalDisplay,
+} from './types.js';
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
-import { buildMatchLinksEmbed, formatScheduledDate } from './embed.js';
-import { postOrRecoverMessage, updateMessage, updateMatchesMessage } from './message.js';
+import { renderMatchCard, renderProposalCard } from './match-renderer.js';
+import { buildMatchLinksEmbed, buildProposalLinksEmbed, formatScheduledDate } from './embed.js';
+import { postOrRecoverMessage, updateMessage, updateCardMessage } from './message.js';
+import { getTeamLogo, clearLogoCache } from './logo-cache.js';
 
 // ── Per-team state ───────────────────────────────────────────────────────────
 
@@ -33,9 +38,10 @@ interface TeamState {
     debounceTimer: ReturnType<typeof setTimeout> | null;
     lastAvailability: AvailabilityData | null;
     teamInfo: TeamInfo | null;
-    scheduledMatches: Array<{ slotId: string; opponentTag: string; opponentId: string }>;
-    activeProposals: Array<{ opponentTag: string; viableSlots: number }>;
+    scheduledMatches: ScheduledMatchDisplay[];
+    activeProposals: ActiveProposalDisplay[];
     matchesMessageId: string | null;
+    proposalsMessageId: string | null;
 }
 
 const activeTeams = new Map<string, TeamState>();
@@ -62,11 +68,12 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const channelId = data.scheduleChannelId as string | null;
         const messageId = data.scheduleMessageId as string | null;
         const matchesMessageId = data.matchesMessageId as string | null;
+        const proposalsMessageId = data.proposalsMessageId as string | null;
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId, matchesMessageId);
+            await startTeamListener(teamId, channelId, messageId, matchesMessageId, proposalsMessageId);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -84,6 +91,7 @@ export function stopAllListeners(): void {
     for (const teamId of [...activeTeams.keys()]) {
         teardownTeam(teamId);
     }
+    clearLogoCache();
     firestoreDb = null;
     botClient = null;
     logger.info('All availability listeners stopped');
@@ -104,6 +112,7 @@ async function startTeamListener(
     channelId: string,
     storedMessageId: string | null,
     storedMatchesMessageId: string | null = null,
+    storedProposalsMessageId: string | null = null,
 ): Promise<void> {
     if (!firestoreDb || !botClient) return;
 
@@ -128,6 +137,7 @@ async function startTeamListener(
         scheduledMatches: [],
         activeProposals: [],
         matchesMessageId: storedMatchesMessageId ?? null,
+        proposalsMessageId: storedProposalsMessageId ?? null,
     };
 
     activeTeams.set(teamId, state);
@@ -315,10 +325,12 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     botClient, state.channelId, teamId, imageBuffer,
                 );
                 state.messageId = newId;
-                // Grid was re-posted — old matches message is now above it, reset it
+                // Grid was re-posted — old secondary messages are now above it, reset them
                 state.matchesMessageId = null;
+                state.proposalsMessageId = null;
                 await firestoreDb!.collection('botRegistrations').doc(teamId).update({
                     matchesMessageId: null,
+                    proposalsMessageId: null,
                 });
             }
         } else {
@@ -333,22 +345,34 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
     }
 
-    // Post or update the matches message (separate, below the grid)
+    // ── Render and post match card images (message #2) ──
     try {
-        const matchLinks = state.scheduledMatches.map(m => ({
-            opponentTag: m.opponentTag,
-            opponentId: m.opponentId,
-            scheduledDate: formatScheduledDate(m.slotId, state.weekId),
-        }));
-        const embed = matchLinks.length > 0
-            ? buildMatchLinksEmbed(teamId, matchLinks)
+        const matchCardBuffers: Buffer[] = [];
+        if (state.scheduledMatches.length > 0 && state.teamInfo) {
+            const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
+
+            for (const match of state.scheduledMatches) {
+                const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
+                const cardBuf = await renderMatchCard({
+                    ownTag: state.teamInfo.teamTag,
+                    ownLogo,
+                    opponentTag: match.opponentTag,
+                    opponentLogo,
+                    gameType: match.gameType,
+                    scheduledDate: match.scheduledDate,
+                });
+                matchCardBuffers.push(cardBuf);
+            }
+        }
+
+        const matchEmbed = state.scheduledMatches.length > 0
+            ? buildMatchLinksEmbed(teamId, state.scheduledMatches)
             : null;
 
-        const newMatchesMsgId = await updateMatchesMessage(
-            botClient, state.channelId, state.matchesMessageId, embed,
+        const newMatchesMsgId = await updateCardMessage(
+            botClient, state.channelId, state.matchesMessageId, matchCardBuffers, matchEmbed,
         );
 
-        // Persist matchesMessageId to Firestore if it changed
         if (newMatchesMsgId !== state.matchesMessageId) {
             state.matchesMessageId = newMatchesMsgId;
             await firestoreDb.collection('botRegistrations').doc(teamId).update({
@@ -357,6 +381,44 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         }
     } catch (err) {
         logger.error('Failed to update matches message', {
+            teamId, error: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    // ── Render and post proposal card images (message #3) ──
+    try {
+        const proposalCardBuffers: Buffer[] = [];
+        if (state.activeProposals.length > 0) {
+            for (const proposal of state.activeProposals) {
+                // Try to find opponent logo (may already be in cache from matches)
+                const opponentLogo = proposal.opponentLogoUrl
+                    ? await getTeamLogo(proposal.opponentTag, proposal.opponentLogoUrl)
+                    : null;
+                const cardBuf = await renderProposalCard({
+                    opponentTag: proposal.opponentTag,
+                    opponentLogo,
+                    viableSlots: proposal.viableSlots,
+                });
+                proposalCardBuffers.push(cardBuf);
+            }
+        }
+
+        const proposalEmbed = state.activeProposals.length > 0
+            ? buildProposalLinksEmbed(teamId)
+            : null;
+
+        const newProposalsMsgId = await updateCardMessage(
+            botClient, state.channelId, state.proposalsMessageId, proposalCardBuffers, proposalEmbed,
+        );
+
+        if (newProposalsMsgId !== state.proposalsMessageId) {
+            state.proposalsMessageId = newProposalsMsgId;
+            await firestoreDb.collection('botRegistrations').doc(teamId).update({
+                proposalsMessageId: newProposalsMsgId,
+            });
+        }
+    } catch (err) {
+        logger.error('Failed to update proposals message', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
@@ -385,6 +447,7 @@ async function fetchTeamInfo(teamId: string): Promise<TeamInfo | null> {
         const data = teamDoc.data()!;
         const teamTag = String(data.teamTag ?? data.tag ?? '');
         const teamName = String(data.teamName ?? data.name ?? '');
+        const logoUrl: string | null = data.activeLogo?.urls?.small ?? null;
 
         const roster: Record<string, RosterMember> = {};
         for (const userDoc of usersSnap.docs) {
@@ -396,7 +459,7 @@ async function fetchTeamInfo(teamId: string): Promise<TeamInfo | null> {
             roster[userDoc.id] = { displayName, initials };
         }
 
-        return { teamId, teamTag, teamName, roster };
+        return { teamId, teamTag, teamName, logoUrl, roster };
     } catch (err) {
         logger.error('Failed to fetch team info', {
             teamId, error: err instanceof Error ? err.message : String(err),
@@ -407,7 +470,7 @@ async function fetchTeamInfo(teamId: string): Promise<TeamInfo | null> {
 
 /**
  * Poll scheduled matches and active proposals for a team.
- * Updates state.scheduledMatches and state.activeProposals.
+ * Fetches enriched data including gameType, names, and opponent logo URLs.
  */
 async function pollScheduledMatches(teamId: string): Promise<void> {
     const state = activeTeams.get(teamId);
@@ -422,33 +485,31 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
             .get();
 
         const prevMatchCount = state.scheduledMatches.length;
+        const prevProposalCount = state.activeProposals.length;
 
-        const scheduledMatches: Array<{ slotId: string; opponentTag: string; opponentId: string }> = [];
+        // Collect opponent teamIds for logo fetching
+        const opponentTeamIds = new Set<string>();
+
+        // Build enriched match list
+        const scheduledMatches: ScheduledMatchDisplay[] = [];
         for (const doc of matchesSnap.docs) {
             const data = doc.data();
-            // Schema uses teamA/teamB — opponent is whichever side isn't us
             const isTeamA = data.teamAId === teamId;
-            const opponentTag = isTeamA
-                ? String(data.teamBTag ?? '?')
-                : String(data.teamATag ?? '?');
-            const opponentId = isTeamA
-                ? String(data.teamBId ?? '')
-                : String(data.teamAId ?? '');
+            const opponentId = isTeamA ? String(data.teamBId ?? '') : String(data.teamAId ?? '');
+            if (opponentId) opponentTeamIds.add(opponentId);
 
             if (data.slotId) {
-                scheduledMatches.push({ slotId: String(data.slotId), opponentTag, opponentId });
+                scheduledMatches.push({
+                    slotId: String(data.slotId),
+                    opponentTag: isTeamA ? String(data.teamBTag ?? '?') : String(data.teamATag ?? '?'),
+                    opponentId,
+                    opponentName: isTeamA ? String(data.teamBName ?? '') : String(data.teamAName ?? ''),
+                    gameType: (data.gameType as 'official' | 'practice') ?? 'practice',
+                    opponentLogoUrl: null, // filled below after logo fetch
+                    scheduledDate: formatScheduledDate(String(data.slotId), state.weekId),
+                });
             }
         }
-
-        // Sort chronologically by slotId time (e.g., "fri_2030" before "sun_2200")
-        const dayOrder: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
-        scheduledMatches.sort((a, b) => {
-            const [dayA, timeA = ''] = a.slotId.split('_');
-            const [dayB, timeB = ''] = b.slotId.split('_');
-            const dayCmp = (dayOrder[dayA] ?? 9) - (dayOrder[dayB] ?? 9);
-            return dayCmp !== 0 ? dayCmp : timeA.localeCompare(timeB);
-        });
-        state.scheduledMatches = scheduledMatches;
 
         // Active proposals (Firestore doesn't support OR across fields, two queries)
         const [proposerSnap, opponentSnap] = await Promise.all([
@@ -462,9 +523,8 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
                 .get(),
         ]);
 
-        // Merge and deduplicate
         const seenIds = new Set<string>();
-        const activeProposals: Array<{ opponentTag: string; viableSlots: number }> = [];
+        const activeProposals: ActiveProposalDisplay[] = [];
 
         for (const snap of [proposerSnap, opponentSnap]) {
             for (const doc of snap.docs) {
@@ -472,21 +532,77 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
                 seenIds.add(doc.id);
 
                 const data = doc.data();
-                const opponentTag = data.proposerTeamId === teamId
-                    ? String(data.opponentTeamTag ?? '?')
-                    : String(data.proposerTeamTag ?? '?');
-                const viableSlots = Array.isArray(data.confirmedSlots)
-                    ? data.confirmedSlots.length
-                    : 0;
+                const isProposer = data.proposerTeamId === teamId;
+                const oppId = isProposer ? String(data.opponentTeamId ?? '') : String(data.proposerTeamId ?? '');
+                if (oppId) opponentTeamIds.add(oppId);
 
-                activeProposals.push({ opponentTag, viableSlots });
+                activeProposals.push({
+                    opponentTag: isProposer
+                        ? String(data.opponentTeamTag ?? '?')
+                        : String(data.proposerTeamTag ?? '?'),
+                    opponentName: isProposer
+                        ? String(data.opponentTeamName ?? '')
+                        : String(data.proposerTeamName ?? ''),
+                    viableSlots: Array.isArray(data.confirmedSlots) ? data.confirmedSlots.length : 0,
+                    opponentLogoUrl: null, // filled below
+                });
             }
         }
 
+        // Batch-fetch opponent team docs for logo URLs
+        if (opponentTeamIds.size > 0) {
+            const teamDocs = await Promise.all(
+                [...opponentTeamIds].map(id => firestoreDb!.collection('teams').doc(id).get()),
+            );
+            const logoUrls = new Map<string, string | null>();
+            for (const doc of teamDocs) {
+                if (doc.exists) {
+                    logoUrls.set(doc.id, doc.data()!.activeLogo?.urls?.small ?? null);
+                }
+            }
+
+            // Fill logo URLs on matches
+            for (const m of scheduledMatches) {
+                m.opponentLogoUrl = logoUrls.get(m.opponentId) ?? null;
+            }
+
+            // Fill logo URLs on proposals (match by tag → id mapping)
+            // We need to map opponent tags to their teamIds for proposals
+            const tagToId = new Map<string, string>();
+            for (const doc of matchesSnap.docs) {
+                const d = doc.data();
+                if (d.teamAId !== teamId) tagToId.set(String(d.teamATag ?? ''), String(d.teamAId));
+                if (d.teamBId !== teamId) tagToId.set(String(d.teamBTag ?? ''), String(d.teamBId));
+            }
+            for (const snap of [proposerSnap, opponentSnap]) {
+                for (const doc of snap.docs) {
+                    const d = doc.data();
+                    const isProposer = d.proposerTeamId === teamId;
+                    const oppId = isProposer ? String(d.opponentTeamId ?? '') : String(d.proposerTeamId ?? '');
+                    const oppTag = isProposer ? String(d.opponentTeamTag ?? '') : String(d.proposerTeamTag ?? '');
+                    if (oppId) tagToId.set(oppTag, oppId);
+                }
+            }
+            for (const p of activeProposals) {
+                const oppId = tagToId.get(p.opponentTag);
+                if (oppId) p.opponentLogoUrl = logoUrls.get(oppId) ?? null;
+            }
+        }
+
+        // Sort matches chronologically
+        const dayOrder: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
+        scheduledMatches.sort((a, b) => {
+            const [dayA, timeA = ''] = a.slotId.split('_');
+            const [dayB, timeB = ''] = b.slotId.split('_');
+            const dayCmp = (dayOrder[dayA] ?? 9) - (dayOrder[dayB] ?? 9);
+            return dayCmp !== 0 ? dayCmp : timeA.localeCompare(timeB);
+        });
+
+        state.scheduledMatches = scheduledMatches;
         state.activeProposals = activeProposals;
 
-        // Trigger re-render if matches/proposals changed
-        if (scheduledMatches.length !== prevMatchCount || activeProposals.length > 0) {
+        // Trigger re-render if matches or proposals changed
+        if (scheduledMatches.length !== prevMatchCount || activeProposals.length !== prevProposalCount) {
             scheduleRender(teamId);
         }
     } catch (err) {

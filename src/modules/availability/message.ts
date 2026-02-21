@@ -178,15 +178,17 @@ export async function updateMessage(
 }
 
 /**
- * Post or update a separate matches message below the grid.
+ * Post or update a card message (matches or proposals).
  *
- * If embed is null, deletes any existing matches message.
- * Returns the matches message ID or null.
+ * Supports N card PNG attachments + an optional link embed.
+ * Deletes the message when there's no content to show.
+ * Returns the message ID or null.
  */
-export async function updateMatchesMessage(
+export async function updateCardMessage(
     client: Client,
     channelId: string,
     existingMessageId: string | null,
+    cardBuffers: Buffer[],
     embed: EmbedBuilder | null,
 ): Promise<string | null> {
     let channel: TextChannel;
@@ -198,8 +200,8 @@ export async function updateMatchesMessage(
         return null;
     }
 
-    // No matches — delete old message if it exists
-    if (!embed) {
+    // No content — delete old message if it exists
+    if (cardBuffers.length === 0 && !embed) {
         if (existingMessageId) {
             try {
                 const msg = await channel.messages.fetch(existingMessageId);
@@ -209,11 +211,18 @@ export async function updateMatchesMessage(
         return null;
     }
 
+    // Build payload
+    const files = cardBuffers.map((buf, i) =>
+        new AttachmentBuilder(buf, { name: `card-${i}.png` }),
+    );
+    const embeds = embed ? [embed] : [];
+    const payload = { files, embeds };
+
     // Try to edit existing
     if (existingMessageId) {
         try {
             const msg = await channel.messages.fetch(existingMessageId);
-            await msg.edit({ embeds: [embed] });
+            await msg.edit(payload);
             return existingMessageId;
         } catch {
             // Message gone — fall through to post new
@@ -222,7 +231,7 @@ export async function updateMatchesMessage(
 
     // Post new
     try {
-        const newMsg = await channel.send({ embeds: [embed] });
+        const newMsg = await channel.send(payload);
         return newMsg.id;
     } catch {
         return null;

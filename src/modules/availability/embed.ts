@@ -42,20 +42,29 @@ export function formatScheduledDate(slotId: string, weekId: string): string {
 const SCHEDULER_BASE = 'https://scheduler.quake.world';
 
 /**
- * Build a minimal embed with clickable match links.
- * Only used when there are scheduled matches — returns a compact embed
- * with one line per match linking to the H2H page.
+ * Build a minimal embed with clickable H2H links below the match card images.
+ * The canvas cards handle the visual — this just provides clickable links.
  */
 export function buildMatchLinksEmbed(
     teamId: string,
-    matches: Array<{ opponentTag: string; opponentId: string; scheduledDate: string }>,
+    matches: Array<{ opponentTag: string; opponentId: string }>,
 ): EmbedBuilder {
     const lines = matches.map(m => {
         const url = `${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${m.opponentId}`;
-        return `\u2694 [vs ${m.opponentTag}](${url}) \u2014 ${m.scheduledDate}`;
+        return `\u2694 [vs ${m.opponentTag} \u2014 H2H Stats](${url})`;
     });
 
     return new EmbedBuilder()
         .setDescription(lines.join('\n'))
         .setColor(0x8b7cf0);
+}
+
+/**
+ * Build a minimal embed linking to proposals on the scheduler site.
+ */
+export function buildProposalLinksEmbed(teamId: string): EmbedBuilder {
+    const url = `${SCHEDULER_BASE}/#/teams/${teamId}`;
+    return new EmbedBuilder()
+        .setDescription(`[View proposals on scheduler.quake.world](${url})`)
+        .setColor(0x4a4d6a);
 }
