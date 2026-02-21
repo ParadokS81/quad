@@ -366,6 +366,14 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     // Clean up empty session directory from failed attempt
     await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
 
+    // Ensure bot actually leaves the voice channel at the gateway level.
+    // connection.destroy() in joinWithRetry may not send a gateway disconnect
+    // if the DAVE handshake never completed, leaving the bot visually stuck.
+    try {
+      const me = interaction.guild?.members.me;
+      if (me?.voice.channelId) await me.voice.disconnect();
+    } catch { /* best effort */ }
+
     await interaction.editReply({
       content: [
         'Failed to join voice channel after 2 attempts. Make sure the bot has all three permissions on this channel:',

@@ -85,22 +85,22 @@ export const recordingModule: BotModule = {
   },
 
   async onReady(client: Client): Promise<void> {
-    // Clean up any stale @discordjs/voice internal state from a previous session.
-    // Only destroys existing VoiceConnection objects — does NOT create temp connections
-    // (which would start aborted DAVE handshakes and poison subsequent join attempts).
-    // If the bot is visually "stuck" in a voice channel, the next /record start will
-    // reclaim it via joinVoiceChannel() which handles the stale state properly.
+    // Clean up stale voice state from a previous session (e.g. container restart).
+    // Two layers: @discordjs/voice in-memory state AND Discord gateway voice state.
     for (const guild of client.guilds.cache.values()) {
       const existingConn = getVoiceConnection(guild.id);
       if (existingConn) {
         logger.info('Cleaning up stale voice connection on startup', { guild: guild.name });
         try { existingConn.destroy(); } catch { /* */ }
       }
+      // If the bot is visually in a voice channel with no active recording,
+      // disconnect via the gateway so it actually leaves.
       if (guild.members.me?.voice.channelId) {
-        logger.warn('Bot appears stuck in voice channel (will be reclaimed on next /record start)', {
+        logger.info('Disconnecting from stale voice channel on startup', {
           guild: guild.name,
           channel: guild.members.me.voice.channel?.name,
         });
+        try { await guild.members.me.voice.disconnect(); } catch { /* */ }
       }
     }
 
