@@ -1,23 +1,36 @@
 /**
  * Canvas renderer for the weekly availability grid.
  *
- * Produces an 800×480 PNG buffer showing team availability per day/time slot.
- * Ready to attach directly to a Discord message via AttachmentBuilder.
+ * Produces a ~550px wide PNG buffer sized to match Discord's inline display
+ * width, avoiding downscaling artifacts. Uses Inter font for crisp text.
  */
 
-import { createCanvas, type SKRSContext2D } from '@napi-rs/canvas';
+import { createCanvas, GlobalFonts, type SKRSContext2D } from '@napi-rs/canvas';
 import { cetToUtcSlotId, isSlotPast } from './time.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-// ── Canvas dimensions ─────────────────────────────────────────────────────────
+// ── Font registration ─────────────────────────────────────────────────────────
 
-const W = 800;
-const TIME_COL_W = 60;       // left column: time labels
-const HEADER_H = 35;          // top bar: team + week info
-const DAY_HEADER_H = 25;      // day column headers row
-const CELL_H = 40;            // height of each time-row cell
-const GRID_TOP = HEADER_H + DAY_HEADER_H;   // y=60: where cells start
-const LEGEND_TOP = GRID_TOP + 9 * CELL_H;   // y=420: legend area
-const LEGEND_H = 24;          // legend row height
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const fontsDir = join(__dirname, '..', '..', '..', 'fonts');
+
+GlobalFonts.registerFromPath(join(fontsDir, 'Inter-Regular.ttf'), 'Inter');
+GlobalFonts.registerFromPath(join(fontsDir, 'Inter-Bold.ttf'), 'Inter');
+
+const FONT = 'Inter';
+
+// ── Canvas dimensions (sized to Discord's ~550px inline display width) ───────
+
+const W = 550;
+const TIME_COL_W = 44;       // left column: time labels
+const HEADER_H = 28;          // top bar: team + week info
+const DAY_HEADER_H = 20;      // day column headers row
+const CELL_H = 32;            // height of each time-row cell
+const GRID_TOP = HEADER_H + DAY_HEADER_H;   // where cells start
+const LEGEND_TOP = GRID_TOP + 9 * CELL_H;   // legend area
+const LEGEND_H = 22;          // legend row height
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -167,7 +180,7 @@ function drawHeader(ctx: SKRSContext2D, input: RenderInput): void {
     const title = `${input.teamTag}  ·  Week ${weekNum}  ·  ${dateRange}`;
 
     ctx.fillStyle = COLORS.textPrimary;
-    ctx.font = 'bold 15px sans-serif';
+    ctx.font = `bold 13px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(title, W / 2, HEADER_H / 2);
@@ -181,7 +194,7 @@ function drawDayHeaders(ctx: SKRSContext2D, input: RenderInput): void {
 
     // "CET" label above the time column
     ctx.fillStyle = COLORS.textSecondary;
-    ctx.font = '10px sans-serif';
+    ctx.font = `10px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('CET', TIME_COL_W / 2, HEADER_H + DAY_HEADER_H / 2);
@@ -200,7 +213,7 @@ function drawDayHeaders(ctx: SKRSContext2D, input: RenderInput): void {
         const isToday = col === todayIdx;
 
         ctx.fillStyle = isToday ? COLORS.todayHighlight : COLORS.textSecondary;
-        ctx.font = isToday ? 'bold 12px sans-serif' : '12px sans-serif';
+        ctx.font = isToday ? `bold 11px ${FONT}` : `11px ${FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, x + w / 2, HEADER_H + DAY_HEADER_H / 2);
@@ -216,7 +229,7 @@ function drawTimeLabel(ctx: SKRSContext2D, row: number, cetSlot: string): void {
     // Time labels always full alpha regardless of past state
     ctx.globalAlpha = 1.0;
     ctx.fillStyle = COLORS.textSecondary;
-    ctx.font = '11px sans-serif';
+    ctx.font = `11px ${FONT}`;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, TIME_COL_W - 4, y + CELL_H / 2);
@@ -258,7 +271,7 @@ function drawCell(
     // Scheduled match: show sword + opponent tag
     if (scheduledMatch) {
         ctx.fillStyle = COLORS.textPrimary;
-        ctx.font = 'bold 12px sans-serif';
+        ctx.font = `bold 11px ${FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`\u2694 vs ${scheduledMatch.opponentTag}`, x + w / 2, y + CELL_H / 2);
@@ -272,7 +285,7 @@ function drawCell(
     const toShow = players.slice(0, MAX_SHOWN);
     const hasOverflow = players.length > MAX_SHOWN;
 
-    ctx.font = 'bold 14px sans-serif';
+    ctx.font = `bold 12px ${FONT}`;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
 
@@ -288,10 +301,10 @@ function drawCell(
     // Add overflow badge width if needed
     let overflowW = 0;
     if (hasOverflow) {
-        ctx.font = '10px sans-serif';
+        ctx.font = `10px ${FONT}`;
         overflowW = ctx.measureText(`+${players.length - MAX_SHOWN}`).width;
         totalW += GAP + overflowW;
-        ctx.font = 'bold 14px sans-serif';
+        ctx.font = `bold 12px ${FONT}`;
     }
 
     // Center the cluster in the cell
@@ -306,7 +319,7 @@ function drawCell(
 
     if (hasOverflow) {
         ctx.fillStyle = COLORS.textSecondary;
-        ctx.font = '10px sans-serif';
+        ctx.font = `10px ${FONT}`;
         ctx.textAlign = 'left';
         ctx.fillText(`+${players.length - MAX_SHOWN}`, drawX, y + CELL_H / 2);
     }
@@ -314,7 +327,7 @@ function drawCell(
     // Overflow count badge in top-right: only show for 5+ players
     if (players.length >= 5) {
         ctx.fillStyle = COLORS.textPrimary;
-        ctx.font = '10px sans-serif';
+        ctx.font = `10px ${FONT}`;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
         ctx.fillText(String(players.length), x + w - 3, y + 3);
@@ -335,12 +348,12 @@ function drawLegend(ctx: SKRSContext2D, input: RenderInput, canvasH: number, col
     if (entries.length === 0) return;
 
     const legendY = LEGEND_TOP + LEGEND_H / 2 + 2;
-    const GAP = 24;
+    const GAP = 16;
 
     const measured = entries.map(([userId, member]) => {
-        ctx.font = '12px sans-serif';
+        ctx.font = `11px ${FONT}`;
         const nameW = ctx.measureText(member.displayName).width;
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = `bold 12px ${FONT}`;
         const initW = ctx.measureText(member.initials[0] ?? '?').width;
         return { userId, member, nameW, initW };
     });
@@ -354,12 +367,12 @@ function drawLegend(ctx: SKRSContext2D, input: RenderInput, canvasH: number, col
     ctx.textAlign = 'left';
 
     for (const { userId, member, nameW, initW } of measured) {
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = `bold 12px ${FONT}`;
         ctx.fillStyle = getColorForUser(userId, colorMap);
         ctx.fillText(member.initials[0] ?? '?', x, legendY);
         x += initW + 5;
 
-        ctx.font = '12px sans-serif';
+        ctx.font = `11px ${FONT}`;
         ctx.fillStyle = COLORS.textSecondary;
         ctx.fillText(member.displayName, x, legendY);
         x += nameW + GAP;

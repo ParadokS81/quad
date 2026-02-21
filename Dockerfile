@@ -38,6 +38,9 @@ COPY package.json ./
 # Copy knowledge YAMLs (not compiled by tsc, needed at runtime)
 COPY src/modules/processing/knowledge/ dist/modules/processing/knowledge/
 
+# Copy Inter font files for canvas rendering
+COPY fonts/ fonts/
+
 # Copy Python transcription script
 COPY scripts/transcribe.py scripts/transcribe.py
 
