@@ -1,11 +1,12 @@
 /**
  * Canvas renderer for match and proposal cards.
  *
- * Each card is a standalone 550px-wide PNG. Discord stacks multiple
- * attachments vertically in a single message, giving a card-per-match layout.
+ * Renders all cards of each type into a single combined canvas (vertical stack).
+ * Discord would display multiple attachments side-by-side in a gallery grid,
+ * so we composite everything into one tall image to get vertical layout.
  *
- * Match card:  550 × 80px — logos, team tags, "vs", game type badge, date
- * Proposal card: 550 × 60px — opponent info, viable slot count
+ * Match card:    550 × 72px — [ownLogo] OFFICIAL vs Opponent [oppLogo] + date
+ * Proposal card: 550 × 56px — [oppLogo] vs Opponent + viable slot count
  */
 
 import { createCanvas, type SKRSContext2D, type Image } from '@napi-rs/canvas';
@@ -15,22 +16,23 @@ import { COLORS, FONT } from './renderer.js';
 // ── Card dimensions ──────────────────────────────────────────────────────────
 
 const W = 550;
-const MATCH_H = 80;
-const PROPOSAL_H = 60;
+const MATCH_H = 72;
+const PROPOSAL_H = 56;
+const CARD_GAP = 6;             // gap between stacked cards
 const LOGO_SIZE = 36;           // match card logo diameter
 const LOGO_SIZE_SM = 28;        // proposal card logo diameter
 const CARD_RADIUS = 6;          // corner radius
 
-// ── Additional colors ────────────────────────────────────────────────────────
+// ── Colors ──────────────────────────────────────────────────────────────────
 
 const BADGE_OFFICIAL = '#22c55e';
 const BADGE_PRACTICE = '#f59e0b';
 const LOGO_FALLBACK_BG = '#4a4d6a';
 const PROPOSAL_BG = '#2a2c40';
 
-// ── Match card ───────────────────────────────────────────────────────────────
+// ── Match cards (combined) ──────────────────────────────────────────────────
 
-interface MatchCardInput {
+export interface MatchCardInput {
     ownTag: string;
     ownLogo: Image | null;
     opponentTag: string;
@@ -39,96 +41,139 @@ interface MatchCardInput {
     scheduledDate: string;       // e.g. "Sun 22nd 21:30 CET"
 }
 
-export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
-    const canvas = createCanvas(W, MATCH_H);
+/**
+ * Render all match cards into a single combined PNG.
+ * Cards are stacked vertically with a small gap between them.
+ */
+export async function renderMatchesImage(cards: MatchCardInput[]): Promise<Buffer> {
+    if (cards.length === 0) return Buffer.alloc(0);
+
+    const totalH = cards.length * MATCH_H + (cards.length - 1) * CARD_GAP;
+    const canvas = createCanvas(W, totalH);
     const ctx = canvas.getContext('2d');
 
-    // Background with rounded corners
-    drawRoundedRect(ctx, 0, 0, W, MATCH_H, CARD_RADIUS, COLORS.cellEmpty);
-
-    // ── Layout zones ──
-    // Left zone:   own logo + tag
-    // Center zone: "vs" with swords
-    // Right zone:  opponent logo + tag
-    // Far right:   badge + date
-
-    const centerX = W * 0.38;  // shift "vs" left to make room for date on right
-
-    // Own team (left)
-    const ownLogoX = 20 + LOGO_SIZE / 2;
-    const logoY = MATCH_H * 0.42;
-    drawLogo(ctx, input.ownLogo, input.ownTag, ownLogoX, logoY, LOGO_SIZE);
-
-    ctx.font = `bold 14px ${FONT}`;
-    ctx.fillStyle = COLORS.textPrimary;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(input.ownTag, 20 + LOGO_SIZE + 10, logoY);
-
-    // "vs" center
-    ctx.font = `bold 11px ${FONT}`;
-    ctx.fillStyle = COLORS.textSecondary;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('\u2694  vs  \u2694', centerX, logoY);
-
-    // Opponent team (right of center)
-    const oppTagX = centerX + 40;
-    ctx.font = `bold 14px ${FONT}`;
-    ctx.fillStyle = COLORS.textPrimary;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(input.opponentTag, oppTagX, logoY);
-
-    const oppTagW = ctx.measureText(input.opponentTag).width;
-    const oppLogoX = oppTagX + oppTagW + 10 + LOGO_SIZE / 2;
-    if (oppLogoX + LOGO_SIZE / 2 < W - 120) {
-        drawLogo(ctx, input.opponentLogo, input.opponentTag, oppLogoX, logoY, LOGO_SIZE);
-    } else {
-        // Not enough space — draw logo after tag, tighter
-        const tightLogoX = oppTagX + oppTagW + 8 + LOGO_SIZE / 2;
-        drawLogo(ctx, input.opponentLogo, input.opponentTag, tightLogoX, logoY, LOGO_SIZE);
+    for (let i = 0; i < cards.length; i++) {
+        const y = i * (MATCH_H + CARD_GAP);
+        drawMatchCard(ctx, y, cards[i]!);
     }
-
-    // Game type badge (far right, upper)
-    const badgeColor = input.gameType === 'official' ? BADGE_OFFICIAL : BADGE_PRACTICE;
-    const badgeText = input.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
-    drawBadge(ctx, badgeText, W - 12, 20, badgeColor);
-
-    // Date/time (far right, lower)
-    ctx.font = `11px ${FONT}`;
-    ctx.fillStyle = COLORS.textSecondary;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(input.scheduledDate, W - 12, 48);
-
-    // Subtle bottom accent line (game type color)
-    ctx.fillStyle = badgeColor;
-    ctx.globalAlpha = 0.6;
-    ctx.fillRect(0, MATCH_H - 3, W, 3);
-    ctx.globalAlpha = 1.0;
 
     return canvas.toBuffer('image/png');
 }
 
-// ── Proposal card ────────────────────────────────────────────────────────────
+/**
+ * Draw a single match card at the given Y offset.
+ *
+ * Layout:
+ *   Row 1 (centered): [ownLogo] OFFICIAL vs OpponentName [opponentLogo]
+ *   Row 2 (centered): Sun 22nd 21:30 CET
+ *   Bottom: accent line in badge color
+ */
+function drawMatchCard(ctx: SKRSContext2D, y: number, input: MatchCardInput): void {
+    // Background
+    drawRoundedRect(ctx, 0, y, W, MATCH_H, CARD_RADIUS, COLORS.cellEmpty);
 
-interface ProposalCardInput {
+    const badgeColor = input.gameType === 'official' ? BADGE_OFFICIAL : BADGE_PRACTICE;
+    const badgeText = input.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
+
+    // ── Row 1: [ownLogo]  OFFICIAL vs OpponentName  [oppLogo] ──
+    const row1Y = y + 26;
+    const logoGap = 10;
+
+    // Measure text segments to center the whole group
+    ctx.font = `bold 11px ${FONT}`;
+    const badgeW = ctx.measureText(badgeText).width;
+
+    ctx.font = `12px ${FONT}`;
+    const vsW = ctx.measureText(' vs ').width;
+
+    ctx.font = `bold 14px ${FONT}`;
+    const oppNameW = ctx.measureText(input.opponentTag).width;
+
+    const textBlockW = badgeW + vsW + oppNameW;
+    const totalGroupW = LOGO_SIZE + logoGap + textBlockW + logoGap + LOGO_SIZE;
+    const startX = (W - totalGroupW) / 2;
+
+    // Own team logo (left)
+    drawLogo(ctx, input.ownLogo, input.ownTag, startX + LOGO_SIZE / 2, row1Y, LOGO_SIZE);
+
+    // Text segments (after own logo)
+    let textX = startX + LOGO_SIZE + logoGap;
+
+    // Badge text (OFFICIAL / PRACTICE) in badge color
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.fillStyle = badgeColor;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, textX, row1Y);
+    textX += badgeW;
+
+    // " vs " in secondary color
+    ctx.font = `12px ${FONT}`;
+    ctx.fillStyle = COLORS.textSecondary;
+    ctx.fillText(' vs ', textX, row1Y);
+    textX += vsW;
+
+    // Opponent name in primary color
+    ctx.font = `bold 14px ${FONT}`;
+    ctx.fillStyle = COLORS.textPrimary;
+    ctx.fillText(input.opponentTag, textX, row1Y);
+
+    // Opponent logo (right of text)
+    const oppLogoX = startX + LOGO_SIZE + logoGap + textBlockW + logoGap + LOGO_SIZE / 2;
+    drawLogo(ctx, input.opponentLogo, input.opponentTag, oppLogoX, row1Y, LOGO_SIZE);
+
+    // ── Row 2: date/time centered ──
+    const row2Y = y + 50;
+    ctx.font = `11px ${FONT}`;
+    ctx.fillStyle = COLORS.textSecondary;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(input.scheduledDate, W / 2, row2Y);
+
+    // ── Bottom accent line ──
+    ctx.fillStyle = badgeColor;
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(0, y + MATCH_H - 2, W, 2);
+    ctx.globalAlpha = 1.0;
+}
+
+// ── Proposal cards (combined) ───────────────────────────────────────────────
+
+export interface ProposalCardInput {
     opponentTag: string;
     opponentLogo: Image | null;
     viableSlots: number;
 }
 
-export async function renderProposalCard(input: ProposalCardInput): Promise<Buffer> {
-    const canvas = createCanvas(W, PROPOSAL_H);
+/**
+ * Render all proposal cards into a single combined PNG.
+ */
+export async function renderProposalsImage(cards: ProposalCardInput[]): Promise<Buffer> {
+    if (cards.length === 0) return Buffer.alloc(0);
+
+    const totalH = cards.length * PROPOSAL_H + (cards.length - 1) * CARD_GAP;
+    const canvas = createCanvas(W, totalH);
     const ctx = canvas.getContext('2d');
 
+    for (let i = 0; i < cards.length; i++) {
+        const y = i * (PROPOSAL_H + CARD_GAP);
+        drawProposalCard(ctx, y, cards[i]!);
+    }
+
+    return canvas.toBuffer('image/png');
+}
+
+/**
+ * Draw a single proposal card at the given Y offset.
+ */
+function drawProposalCard(ctx: SKRSContext2D, y: number, input: ProposalCardInput): void {
     // Background
-    drawRoundedRect(ctx, 0, 0, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
+    drawRoundedRect(ctx, 0, y, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
+
+    const centerY = y + PROPOSAL_H / 2;
 
     // Opponent logo (left)
     const logoX = 16 + LOGO_SIZE_SM / 2;
-    const centerY = PROPOSAL_H / 2;
     drawLogo(ctx, input.opponentLogo, input.opponentTag, logoX, centerY, LOGO_SIZE_SM);
 
     // "vs TAG" text
@@ -145,20 +190,18 @@ export async function renderProposalCard(input: ProposalCardInput): Promise<Buff
     ctx.textAlign = 'left';
     ctx.fillText(slotsText, 16 + LOGO_SIZE_SM + 10, centerY + 10);
 
-    // "view on site →" (far right)
+    // "view on site" (far right)
     ctx.font = `10px ${FONT}`;
     ctx.fillStyle = '#6b7280';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     ctx.fillText('view on site \u2192', W - 12, centerY);
 
-    // Subtle left accent bar (muted purple)
+    // Subtle left accent bar
     ctx.fillStyle = COLORS.todayHighlight;
     ctx.globalAlpha = 0.4;
-    drawRoundedRect(ctx, 0, 0, 3, PROPOSAL_H, CARD_RADIUS, COLORS.todayHighlight);
+    drawRoundedRect(ctx, 0, y, 3, PROPOSAL_H, CARD_RADIUS, COLORS.todayHighlight);
     ctx.globalAlpha = 1.0;
-
-    return canvas.toBuffer('image/png');
 }
 
 // ── Drawing helpers ──────────────────────────────────────────────────────────
@@ -220,43 +263,4 @@ function drawRoundedRect(
     ctx.quadraticCurveTo(x, y, x + radius, y);
     ctx.closePath();
     ctx.fill();
-}
-
-/** Draw a small badge pill with text (right-aligned). */
-function drawBadge(
-    ctx: SKRSContext2D,
-    text: string,
-    rightX: number,
-    centerY: number,
-    color: string,
-): void {
-    ctx.font = `bold 9px ${FONT}`;
-    const tw = ctx.measureText(text).width;
-    const padX = 6;
-    const bw = tw + padX * 2;
-    const bh = 14;
-    const bx = rightX - bw;
-    const by = centerY - bh / 2;
-    const r = bh / 2;
-
-    // Pill shape
-    ctx.fillStyle = color;
-    ctx.globalAlpha = 0.85;
-    ctx.beginPath();
-    ctx.moveTo(bx + r, by);
-    ctx.lineTo(bx + bw - r, by);
-    ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
-    ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
-    ctx.lineTo(bx + r, by + bh);
-    ctx.quadraticCurveTo(bx, by + bh, bx, by + r);
-    ctx.quadraticCurveTo(bx, by, bx + r, by);
-    ctx.closePath();
-    ctx.fill();
-    ctx.globalAlpha = 1.0;
-
-    // Text
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, bx + bw / 2, centerY);
 }

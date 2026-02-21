@@ -51,7 +51,7 @@ export function buildMatchLinksEmbed(
 ): EmbedBuilder {
     const lines = matches.map(m => {
         const url = `${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${m.opponentId}`;
-        return `\u2694 [vs ${m.opponentTag} \u2014 H2H Stats](${url})`;
+        return `[vs ${m.opponentTag} \u2014 H2H Stats](${url})`;
     });
 
     return new EmbedBuilder()

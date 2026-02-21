@@ -20,7 +20,10 @@ import {
 } from './types.js';
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
-import { renderMatchCard, renderProposalCard } from './match-renderer.js';
+import {
+    renderMatchesImage, renderProposalsImage,
+    type MatchCardInput, type ProposalCardInput,
+} from './match-renderer.js';
 import { buildMatchLinksEmbed, buildProposalLinksEmbed, formatScheduledDate } from './embed.js';
 import { postOrRecoverMessage, updateMessage, updateCardMessage } from './message.js';
 import { getTeamLogo, clearLogoCache } from './logo-cache.js';
@@ -347,13 +350,14 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
 
     // ── Render and post match card images (message #2) ──
     try {
-        const matchCardBuffers: Buffer[] = [];
+        let matchImageBuffer: Buffer | null = null;
         if (state.scheduledMatches.length > 0 && state.teamInfo) {
             const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
 
+            const cards: MatchCardInput[] = [];
             for (const match of state.scheduledMatches) {
                 const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
-                const cardBuf = await renderMatchCard({
+                cards.push({
                     ownTag: state.teamInfo.teamTag,
                     ownLogo,
                     opponentTag: match.opponentTag,
@@ -361,8 +365,8 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     gameType: match.gameType,
                     scheduledDate: match.scheduledDate,
                 });
-                matchCardBuffers.push(cardBuf);
             }
+            matchImageBuffer = await renderMatchesImage(cards);
         }
 
         const matchEmbed = state.scheduledMatches.length > 0
@@ -370,7 +374,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             : null;
 
         const newMatchesMsgId = await updateCardMessage(
-            botClient, state.channelId, state.matchesMessageId, matchCardBuffers, matchEmbed,
+            botClient, state.channelId, state.matchesMessageId, matchImageBuffer, matchEmbed,
         );
 
         if (newMatchesMsgId !== state.matchesMessageId) {
@@ -387,20 +391,20 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
 
     // ── Render and post proposal card images (message #3) ──
     try {
-        const proposalCardBuffers: Buffer[] = [];
+        let proposalImageBuffer: Buffer | null = null;
         if (state.activeProposals.length > 0) {
+            const cards: ProposalCardInput[] = [];
             for (const proposal of state.activeProposals) {
-                // Try to find opponent logo (may already be in cache from matches)
                 const opponentLogo = proposal.opponentLogoUrl
                     ? await getTeamLogo(proposal.opponentTag, proposal.opponentLogoUrl)
                     : null;
-                const cardBuf = await renderProposalCard({
+                cards.push({
                     opponentTag: proposal.opponentTag,
                     opponentLogo,
                     viableSlots: proposal.viableSlots,
                 });
-                proposalCardBuffers.push(cardBuf);
             }
+            proposalImageBuffer = await renderProposalsImage(cards);
         }
 
         const proposalEmbed = state.activeProposals.length > 0
@@ -408,7 +412,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             : null;
 
         const newProposalsMsgId = await updateCardMessage(
-            botClient, state.channelId, state.proposalsMessageId, proposalCardBuffers, proposalEmbed,
+            botClient, state.channelId, state.proposalsMessageId, proposalImageBuffer, proposalEmbed,
         );
 
         if (newProposalsMsgId !== state.proposalsMessageId) {

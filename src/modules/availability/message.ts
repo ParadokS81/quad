@@ -180,15 +180,15 @@ export async function updateMessage(
 /**
  * Post or update a card message (matches or proposals).
  *
- * Supports N card PNG attachments + an optional link embed.
- * Deletes the message when there's no content to show.
+ * Takes a single combined PNG (all cards composited into one image)
+ * plus an optional link embed below. Deletes the message when empty.
  * Returns the message ID or null.
  */
 export async function updateCardMessage(
     client: Client,
     channelId: string,
     existingMessageId: string | null,
-    cardBuffers: Buffer[],
+    imageBuffer: Buffer | null,
     embed: EmbedBuilder | null,
 ): Promise<string | null> {
     let channel: TextChannel;
@@ -201,7 +201,7 @@ export async function updateCardMessage(
     }
 
     // No content — delete old message if it exists
-    if (cardBuffers.length === 0 && !embed) {
+    if (!imageBuffer && !embed) {
         if (existingMessageId) {
             try {
                 const msg = await channel.messages.fetch(existingMessageId);
@@ -212,9 +212,9 @@ export async function updateCardMessage(
     }
 
     // Build payload
-    const files = cardBuffers.map((buf, i) =>
-        new AttachmentBuilder(buf, { name: `card-${i}.png` }),
-    );
+    const files = imageBuffer
+        ? [new AttachmentBuilder(imageBuffer, { name: 'cards.png' })]
+        : [];
     const embeds = embed ? [embed] : [];
     const payload = { files, embeds };
 
