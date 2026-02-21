@@ -11,7 +11,7 @@
  * QW Hub matches belong to this team.
  */
 
-import { ChatInputCommandInteraction, ChannelType, Guild, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import { ChatInputCommandInteraction, ChannelType, Collection, Guild, GuildMember, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
 
@@ -101,10 +101,13 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
   const guild = interaction.guild;
   const guildName = guild?.name || 'Unknown';
 
-  // Build player mapping before activating
+  // Build player mapping and guild member cache before activating
   let knownPlayers: Record<string, string> = {};
+  let guildMembers: Record<string, GuildMemberEntry> = {};
   if (guild) {
-    knownPlayers = await buildKnownPlayers(data.teamId, guild);
+    const fetchedMembers = await guild.members.fetch();
+    knownPlayers = await buildKnownPlayers(data.teamId, guild, fetchedMembers);
+    guildMembers = buildGuildMembersCache(guild.client.user!.id, fetchedMembers);
   }
 
   // Build available channels list for MatchScheduler dropdown
@@ -147,11 +150,12 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     }
   }
 
-  // Activate the registration with the player mapping, channels, and default notification channel
+  // Activate the registration with the player mapping, guild members, channels, and default notification channel
   await doc.ref.update({
     guildId,
     guildName,
     knownPlayers,
+    guildMembers,
     availableChannels,
     notificationChannelId: defaultChannelId,
     notificationsEnabled: !!defaultChannelId,
@@ -188,7 +192,11 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
  * Queries `users` collection for members of this team, then checks which of them
  * have a discordUserId that exists in the guild.
  */
-async function buildKnownPlayers(teamId: string, guild: Guild): Promise<Record<string, string>> {
+async function buildKnownPlayers(
+  teamId: string,
+  guild: Guild,
+  guildMembers: Collection<string, GuildMember>,
+): Promise<Record<string, string>> {
   const db = getDb();
   const knownPlayers: Record<string, string> = {};
 
@@ -202,9 +210,6 @@ async function buildKnownPlayers(teamId: string, guild: Guild): Promise<Record<s
       logger.info('No users found for team in Firestore', { teamId });
       return knownPlayers;
     }
-
-    // Fetch guild members so we can verify they're in the server
-    const guildMembers = await guild.members.fetch();
 
     for (const userDoc of usersSnap.docs) {
       const userData = userDoc.data();
@@ -235,4 +240,34 @@ async function buildKnownPlayers(teamId: string, guild: Guild): Promise<Record<s
   }
 
   return knownPlayers;
+}
+
+export interface GuildMemberEntry {
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  isBot: boolean;
+}
+
+/**
+ * Build a discordUserId → GuildMemberEntry map for all guild members.
+ * Excludes the bot itself.
+ */
+export function buildGuildMembersCache(
+  botUserId: string,
+  members: Collection<string, GuildMember>,
+): Record<string, GuildMemberEntry> {
+  const cache: Record<string, GuildMemberEntry> = {};
+
+  for (const [id, member] of members) {
+    if (id === botUserId) continue;
+    cache[id] = {
+      username: member.user.username,
+      displayName: member.displayName,
+      avatarUrl: member.user.displayAvatarURL({ size: 128 }),
+      isBot: member.user.bot,
+    };
+  }
+
+  return cache;
 }

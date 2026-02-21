@@ -3,6 +3,7 @@ import { type Config } from './config.js';
 import { type BotModule } from './module.js';
 import { logger } from './logger.js';
 import { startHealthServer, stopHealthServer } from './health.js';
+import { registerGuildSyncEvents, refreshAllGuildMembers } from '../modules/registration/guild-sync.js';
 
 let client: Client;
 let loadedModules: BotModule[] = [];
@@ -70,6 +71,10 @@ export async function start(config: Config, modules: BotModule[]): Promise<void>
 
     // Start health endpoint
     startHealthServer(config.healthPort, modules.map((m) => m.name));
+
+    // Register guild member sync events and refresh caches for all active registrations
+    registerGuildSyncEvents(readyClient);
+    await refreshAllGuildMembers(readyClient);
 
     // Call onReady on each module
     for (const mod of modules) {
