@@ -51,7 +51,7 @@ export function buildMatchButton(
     match: { opponentTag: string; opponentId: string },
 ): ActionRowBuilder<ButtonBuilder> {
     const button = new ButtonBuilder()
-        .setLabel(`H2H vs ${match.opponentTag}`)
+        .setLabel('Head2Head stats')
         .setURL(`${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${match.opponentId}`)
         .setStyle(ButtonStyle.Link);
 
@@ -66,7 +66,7 @@ export function buildProposalButton(
     proposal: { proposalId: string; opponentTag: string },
 ): ActionRowBuilder<ButtonBuilder> {
     const button = new ButtonBuilder()
-        .setLabel(`vs ${proposal.opponentTag}`)
+        .setLabel('View proposal')
         .setURL(`${SCHEDULER_BASE}/#/matches/${proposal.proposalId}`)
         .setStyle(ButtonStyle.Link);
 
