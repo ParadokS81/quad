@@ -4,8 +4,9 @@
  * Each card is an individual 550px-wide PNG — one per Discord message,
  * paired with its own link button directly below it.
  *
- * Match card:    550 × 50px — [ownLogo] OFFICIAL vs Full Name [oppLogo]  date
- * Proposal card: 550 × 44px — [oppLogo] vs Full Name  ·  N viable slots
+ * Match card:    550 × 75px — [ownLogo] OFFICIAL   vs   OpponentName [oppLogo]   date
+ *                              "vs" is fixed at horizontal center so logos align vertically
+ * Proposal card: 550 × 56px — [oppLogo] vs Full Name  ·  N viable slots
  */
 
 import { createCanvas, type SKRSContext2D, type Image } from '@napi-rs/canvas';
@@ -15,10 +16,10 @@ import { COLORS, FONT } from './renderer.js';
 // ── Card dimensions ──────────────────────────────────────────────────────────
 
 const W = 550;
-const MATCH_H = 50;
-const PROPOSAL_H = 44;
-const LOGO_SIZE = 36;           // match card logo diameter
-const LOGO_SIZE_SM = 28;        // proposal card logo diameter
+const MATCH_H = 75;
+const PROPOSAL_H = 56;
+const LOGO_SIZE = 42;           // match card logo diameter
+const LOGO_SIZE_SM = 34;        // proposal card logo diameter
 const CARD_RADIUS = 6;          // corner radius
 
 // ── Colors ──────────────────────────────────────────────────────────────────
@@ -43,9 +44,9 @@ export interface MatchCardInput {
 /**
  * Render a single match card as a standalone PNG.
  *
- * Layout (single row, full width):
- *   [ownLogo]  OFFICIAL vs Hell Express  [oppLogo]     Sun 22nd 21:30 CET
- *   ════════════ accent line (badge color) ════════════════════════════════
+ * Layout — "vs" fixed at horizontal center, logos align vertically across cards:
+ *   [ownLogo] OFFICIAL        vs        Hell Xpress [oppLogo]  Sun 22nd 21:30 CET
+ *   ═══════════════════ accent line (badge color) ════════════════════════════════
  */
 export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
     const canvas = createCanvas(W, MATCH_H);
@@ -56,43 +57,54 @@ export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
     const badgeColor = input.gameType === 'official' ? COLOR_OFFICIAL : COLOR_PRACTICE;
     const badgeText = input.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
     const centerY = (MATCH_H - 2) / 2;
+    const centerX = W / 2;
 
     const pad = 14;
     const logoGap = 10;
-    let x = pad;
 
-    // Own logo
-    drawLogo(ctx, input.ownLogo, input.ownTag, x + LOGO_SIZE / 2, centerY, LOGO_SIZE);
-    x += LOGO_SIZE + logoGap;
+    // ── "vs" at dead center ──
+    ctx.font = `15px ${FONT}`;
+    ctx.fillStyle = COLORS.textSecondary;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('vs', centerX, centerY);
 
-    // Badge text
-    ctx.font = `bold 12px ${FONT}`;
+    // ── Left side: [ownLogo] BADGE — left-aligned ──
+    const leftX = pad;
+    drawLogo(ctx, input.ownLogo, input.ownTag, leftX + LOGO_SIZE / 2, centerY, LOGO_SIZE);
+
+    ctx.font = `bold 15px ${FONT}`;
     ctx.fillStyle = badgeColor;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(badgeText, x, centerY);
-    x += ctx.measureText(badgeText).width;
+    ctx.fillText(badgeText, leftX + LOGO_SIZE + logoGap, centerY);
 
-    // " vs "
-    ctx.font = `13px ${FONT}`;
-    ctx.fillStyle = COLORS.textSecondary;
-    const vsText = ' vs ';
-    ctx.fillText(vsText, x, centerY);
-    x += ctx.measureText(vsText).width;
+    // ── Right side: OpponentName [oppLogo] — starts right of "vs" ──
+    const vsHalfW = ctx.measureText('vs').width / 2 + 2; // measure with vs font
+    ctx.font = `15px ${FONT}`;  // reset to vs font for measurement
+    const rightStart = centerX + 20; // fixed gap right of "vs"
 
-    // Opponent name (full clan name)
-    ctx.font = `bold 14px ${FONT}`;
+    ctx.font = `bold 16px ${FONT}`;
     ctx.fillStyle = COLORS.textPrimary;
-    const maxNameW = W - x - logoGap - LOGO_SIZE - 16 - 140;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    // Budget for opponent name: from rightStart to before oppLogo + date
+    const dateFont = `13px ${FONT}`;
+    ctx.font = dateFont;
+    const dateW = ctx.measureText(input.scheduledDate).width;
+    ctx.font = `bold 16px ${FONT}`;
+
+    const maxNameW = W - rightStart - logoGap - LOGO_SIZE - logoGap - dateW - pad;
     const oppName = truncateText(ctx, input.opponentName, maxNameW);
-    ctx.fillText(oppName, x, centerY);
-    x += ctx.measureText(oppName).width + logoGap;
+    ctx.fillText(oppName, rightStart, centerY);
 
-    // Opponent logo
-    drawLogo(ctx, input.opponentLogo, input.opponentTag, x + LOGO_SIZE / 2, centerY, LOGO_SIZE);
+    const nameW = ctx.measureText(oppName).width;
+    const oppLogoX = rightStart + nameW + logoGap + LOGO_SIZE / 2;
+    drawLogo(ctx, input.opponentLogo, input.opponentTag, oppLogoX, centerY, LOGO_SIZE);
 
-    // Right-aligned: date/time
-    ctx.font = `12px ${FONT}`;
+    // ── Date — right-aligned ──
+    ctx.font = dateFont;
     ctx.fillStyle = COLORS.textSecondary;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -134,7 +146,7 @@ export async function renderProposalCard(input: ProposalCardInput): Promise<Buff
     x += LOGO_SIZE_SM + 10;
 
     // "vs OpponentName"
-    ctx.font = `bold 13px ${FONT}`;
+    ctx.font = `bold 15px ${FONT}`;
     ctx.fillStyle = COLORS.textPrimary;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -143,7 +155,7 @@ export async function renderProposalCard(input: ProposalCardInput): Promise<Buff
 
     // Separator dot + viable slots
     const slotsText = input.viableSlots === 1 ? '1 viable slot' : `${input.viableSlots} viable slots`;
-    ctx.font = `12px ${FONT}`;
+    ctx.font = `14px ${FONT}`;
     ctx.fillStyle = COLORS.textSecondary;
     ctx.fillText(`  \u00b7  ${slotsText}`, x, centerY);
 
