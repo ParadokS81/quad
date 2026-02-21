@@ -1,9 +1,8 @@
 /**
  * Canvas renderer for match and proposal cards.
  *
- * Cards are composited into a single combined canvas per category.
- * Sent as a regular Discord attachment (full-width) with link buttons
- * below for navigation.
+ * Each card is an individual 550px-wide PNG — one per Discord message,
+ * paired with its own link button directly below it.
  *
  * Match card:    550 × 50px — [ownLogo] OFFICIAL vs Full Name [oppLogo]  date
  * Proposal card: 550 × 44px — [oppLogo] vs Full Name  ·  N viable slots
@@ -18,15 +17,14 @@ import { COLORS, FONT } from './renderer.js';
 const W = 550;
 const MATCH_H = 50;
 const PROPOSAL_H = 44;
-const CARD_GAP = 6;             // gap between stacked cards
 const LOGO_SIZE = 36;           // match card logo diameter
 const LOGO_SIZE_SM = 28;        // proposal card logo diameter
 const CARD_RADIUS = 6;          // corner radius
 
 // ── Colors ──────────────────────────────────────────────────────────────────
 
-export const COLOR_OFFICIAL = '#22c55e';
-export const COLOR_PRACTICE = '#f59e0b';
+const COLOR_OFFICIAL = '#22c55e';
+const COLOR_PRACTICE = '#f59e0b';
 const LOGO_FALLBACK_BG = '#4a4d6a';
 const PROPOSAL_BG = '#2a2c40';
 
@@ -43,37 +41,21 @@ export interface MatchCardInput {
 }
 
 /**
- * Render all match cards into a single combined PNG.
- * Cards are stacked vertically with a small gap between them.
- */
-export async function renderMatchesImage(cards: MatchCardInput[]): Promise<Buffer> {
-    if (cards.length === 0) return Buffer.alloc(0);
-
-    const totalH = cards.length * MATCH_H + (cards.length - 1) * CARD_GAP;
-    const canvas = createCanvas(W, totalH);
-    const ctx = canvas.getContext('2d');
-
-    for (let i = 0; i < cards.length; i++) {
-        drawMatchCard(ctx, i * (MATCH_H + CARD_GAP), cards[i]!);
-    }
-
-    return canvas.toBuffer('image/png');
-}
-
-/**
- * Draw a single match card at y offset.
+ * Render a single match card as a standalone PNG.
  *
  * Layout (single row, full width):
  *   [ownLogo]  OFFICIAL vs Hell Express  [oppLogo]     Sun 22nd 21:30 CET
  *   ════════════ accent line (badge color) ════════════════════════════════
  */
-function drawMatchCard(ctx: SKRSContext2D, y: number, input: MatchCardInput): void {
-    // Background
-    drawRoundedRect(ctx, 0, y, W, MATCH_H, CARD_RADIUS, COLORS.cellEmpty);
+export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
+    const canvas = createCanvas(W, MATCH_H);
+    const ctx = canvas.getContext('2d');
+
+    drawRoundedRect(ctx, 0, 0, W, MATCH_H, CARD_RADIUS, COLORS.cellEmpty);
 
     const badgeColor = input.gameType === 'official' ? COLOR_OFFICIAL : COLOR_PRACTICE;
     const badgeText = input.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
-    const centerY = y + (MATCH_H - 2) / 2; // -2 for accent line
+    const centerY = (MATCH_H - 2) / 2;
 
     const pad = 14;
     const logoGap = 10;
@@ -119,8 +101,10 @@ function drawMatchCard(ctx: SKRSContext2D, y: number, input: MatchCardInput): vo
     // Bottom accent line
     ctx.fillStyle = badgeColor;
     ctx.globalAlpha = 0.5;
-    ctx.fillRect(0, y + MATCH_H - 2, W, 2);
+    ctx.fillRect(0, MATCH_H - 2, W, 2);
     ctx.globalAlpha = 1.0;
+
+    return canvas.toBuffer('image/png');
 }
 
 // ── Proposal card ───────────────────────────────────────────────────────────
@@ -133,30 +117,15 @@ export interface ProposalCardInput {
 }
 
 /**
- * Render all proposal cards into a single combined PNG.
+ * Render a single proposal card as a standalone PNG.
  */
-export async function renderProposalsImage(cards: ProposalCardInput[]): Promise<Buffer> {
-    if (cards.length === 0) return Buffer.alloc(0);
-
-    const totalH = cards.length * PROPOSAL_H + (cards.length - 1) * CARD_GAP;
-    const canvas = createCanvas(W, totalH);
+export async function renderProposalCard(input: ProposalCardInput): Promise<Buffer> {
+    const canvas = createCanvas(W, PROPOSAL_H);
     const ctx = canvas.getContext('2d');
 
-    for (let i = 0; i < cards.length; i++) {
-        drawProposalCard(ctx, i * (PROPOSAL_H + CARD_GAP), cards[i]!);
-    }
+    drawRoundedRect(ctx, 0, 0, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
 
-    return canvas.toBuffer('image/png');
-}
-
-/**
- * Draw a single proposal card at y offset.
- */
-function drawProposalCard(ctx: SKRSContext2D, y: number, input: ProposalCardInput): void {
-    // Background
-    drawRoundedRect(ctx, 0, y, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
-
-    const centerY = y + PROPOSAL_H / 2;
+    const centerY = PROPOSAL_H / 2;
     const pad = 14;
     let x = pad;
 
@@ -181,8 +150,10 @@ function drawProposalCard(ctx: SKRSContext2D, y: number, input: ProposalCardInpu
     // Subtle left accent bar
     ctx.fillStyle = COLORS.todayHighlight;
     ctx.globalAlpha = 0.4;
-    ctx.fillRect(0, y, 3, PROPOSAL_H);
+    ctx.fillRect(0, 0, 3, PROPOSAL_H);
     ctx.globalAlpha = 1.0;
+
+    return canvas.toBuffer('image/png');
 }
 
 // ── Drawing helpers ──────────────────────────────────────────────────────────
@@ -217,7 +188,6 @@ function drawLogo(
         ctx.drawImage(logo, cx - r, cy - r, size, size);
         ctx.restore();
     } else {
-        // Colored circle with first 2 chars of tag
         ctx.fillStyle = LOGO_FALLBACK_BG;
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);

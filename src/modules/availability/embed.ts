@@ -43,48 +43,32 @@ export function formatScheduledDate(slotId: string, weekId: string): string {
 const SCHEDULER_BASE = 'https://scheduler.quake.world';
 
 /**
- * Build action rows with H2H link buttons for scheduled matches.
- * Each match gets a button: "vs OpponentTag" → H2H page.
- * Up to 5 buttons per row, up to 5 rows (25 matches max).
+ * Build a single action row with an H2H link button for one match.
+ * One button per message — paired directly with its card image.
  */
-export function buildMatchButtons(
+export function buildMatchButton(
     teamId: string,
-    matches: Array<{ opponentTag: string; opponentId: string }>,
-): ActionRowBuilder<ButtonBuilder>[] {
-    const buttons = matches.map(m =>
-        new ButtonBuilder()
-            .setLabel(`H2H vs ${m.opponentTag}`)
-            .setURL(`${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${m.opponentId}`)
-            .setStyle(ButtonStyle.Link),
-    );
+    match: { opponentTag: string; opponentId: string },
+): ActionRowBuilder<ButtonBuilder> {
+    const button = new ButtonBuilder()
+        .setLabel(`H2H vs ${match.opponentTag}`)
+        .setURL(`${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${match.opponentId}`)
+        .setStyle(ButtonStyle.Link);
 
-    return chunkIntoRows(buttons);
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 }
 
 /**
- * Build action rows with proposal link buttons.
- * Each proposal gets a button: "vs OpponentTag" → proposal deep-link.
+ * Build a single action row with a proposal link button.
+ * One button per message — paired directly with its card image.
  */
-export function buildProposalButtons(
-    proposals: Array<{ proposalId: string; opponentTag: string }>,
-): ActionRowBuilder<ButtonBuilder>[] {
-    const buttons = proposals.map(p =>
-        new ButtonBuilder()
-            .setLabel(`vs ${p.opponentTag}`)
-            .setURL(`${SCHEDULER_BASE}/#/matches/${p.proposalId}`)
-            .setStyle(ButtonStyle.Link),
-    );
+export function buildProposalButton(
+    proposal: { proposalId: string; opponentTag: string },
+): ActionRowBuilder<ButtonBuilder> {
+    const button = new ButtonBuilder()
+        .setLabel(`vs ${proposal.opponentTag}`)
+        .setURL(`${SCHEDULER_BASE}/#/matches/${proposal.proposalId}`)
+        .setStyle(ButtonStyle.Link);
 
-    return chunkIntoRows(buttons);
-}
-
-/** Split buttons into action rows (max 5 buttons per row). */
-function chunkIntoRows(buttons: ButtonBuilder[]): ActionRowBuilder<ButtonBuilder>[] {
-    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-    for (let i = 0; i < buttons.length; i += 5) {
-        const row = new ActionRowBuilder<ButtonBuilder>()
-            .addComponents(buttons.slice(i, i + 5));
-        rows.push(row);
-    }
-    return rows;
+    return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 }

@@ -179,64 +179,79 @@ export async function updateMessage(
 }
 
 /**
- * Post or update a card message (matches or proposals).
+ * Sync an array of card messages (one per match/proposal).
  *
- * Takes a single combined canvas PNG (full-width regular attachment)
- * plus link button action rows below.
- * Deletes the message when there's no content.
- * Returns the message ID or null.
+ * Each card is its own Discord message: one image + one button row.
+ * This function edits existing messages, posts new ones, and deletes
+ * excess messages from the old set.
+ *
+ * Returns the new array of message IDs (same length as cards, or empty).
  */
-export async function updateCardMessage(
+export async function syncCardMessages(
     client: Client,
     channelId: string,
-    existingMessageId: string | null,
-    imageBuffer: Buffer | null,
-    buttonRows: ActionRowBuilder<ButtonBuilder>[],
-): Promise<string | null> {
+    existingIds: string[],
+    cards: Array<{ buffer: Buffer; button: ActionRowBuilder<ButtonBuilder> }>,
+): Promise<string[]> {
     let channel: TextChannel;
     try {
         const fetched = await client.channels.fetch(channelId);
-        if (!fetched || !fetched.isTextBased()) return null;
+        if (!fetched || !fetched.isTextBased()) return [];
         channel = fetched as TextChannel;
     } catch {
-        return null;
+        return [];
     }
 
-    // No content — delete old message if it exists
-    if (!imageBuffer && buttonRows.length === 0) {
-        if (existingMessageId) {
+    // No cards — delete all existing messages
+    if (cards.length === 0) {
+        for (const id of existingIds) {
             try {
-                const msg = await channel.messages.fetch(existingMessageId);
+                const msg = await channel.messages.fetch(id);
                 await msg.delete();
             } catch { /* already gone */ }
         }
-        return null;
+        return [];
     }
 
-    // Build payload
-    const files = imageBuffer
-        ? [new AttachmentBuilder(imageBuffer, { name: 'cards.png' })]
-        : [];
-    const payload = { files, embeds: [], components: buttonRows };
+    const newIds: string[] = [];
 
-    // Try to edit existing
-    if (existingMessageId) {
+    for (let i = 0; i < cards.length; i++) {
+        const { buffer, button } = cards[i];
+        const attachment = new AttachmentBuilder(buffer, { name: `card-${i}.png` });
+        const payload = { files: [attachment], embeds: [], components: [button] };
+
+        // Try to edit existing message at this index
+        if (i < existingIds.length && existingIds[i]) {
+            try {
+                const msg = await channel.messages.fetch(existingIds[i]);
+                await msg.edit(payload);
+                newIds.push(existingIds[i]);
+                continue;
+            } catch {
+                // Message gone — post new below
+            }
+        }
+
+        // Post new message
         try {
-            const msg = await channel.messages.fetch(existingMessageId);
-            await msg.edit(payload);
-            return existingMessageId;
+            const newMsg = await channel.send(payload);
+            newIds.push(newMsg.id);
         } catch {
-            // Message gone — fall through to post new
+            // Failed — skip this card
         }
     }
 
-    // Post new
-    try {
-        const newMsg = await channel.send(payload);
-        return newMsg.id;
-    } catch {
-        return null;
+    // Delete excess old messages (if we now have fewer cards than before)
+    for (let i = cards.length; i < existingIds.length; i++) {
+        if (existingIds[i]) {
+            try {
+                const msg = await channel.messages.fetch(existingIds[i]);
+                await msg.delete();
+            } catch { /* already gone */ }
+        }
     }
+
+    return newIds;
 }
 
 // ── Action rows for the persistent message ──────────────────────────────────

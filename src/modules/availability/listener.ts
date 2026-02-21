@@ -21,11 +21,11 @@ import {
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
 import {
-    renderMatchesImage, renderProposalsImage,
+    renderMatchCard, renderProposalCard,
     type MatchCardInput, type ProposalCardInput,
 } from './match-renderer.js';
-import { buildMatchButtons, buildProposalButtons, formatScheduledDate } from './embed.js';
-import { postOrRecoverMessage, updateMessage, updateCardMessage } from './message.js';
+import { buildMatchButton, buildProposalButton, formatScheduledDate } from './embed.js';
+import { postOrRecoverMessage, updateMessage, syncCardMessages } from './message.js';
 import { getTeamLogo, clearLogoCache } from './logo-cache.js';
 
 // ── Per-team state ───────────────────────────────────────────────────────────
@@ -43,8 +43,8 @@ interface TeamState {
     teamInfo: TeamInfo | null;
     scheduledMatches: ScheduledMatchDisplay[];
     activeProposals: ActiveProposalDisplay[];
-    matchesMessageId: string | null;
-    proposalsMessageId: string | null;
+    matchMessageIds: string[];
+    proposalMessageIds: string[];
 }
 
 const activeTeams = new Map<string, TeamState>();
@@ -70,13 +70,13 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const teamId = doc.id;
         const channelId = data.scheduleChannelId as string | null;
         const messageId = data.scheduleMessageId as string | null;
-        const matchesMessageId = data.matchesMessageId as string | null;
-        const proposalsMessageId = data.proposalsMessageId as string | null;
+        const matchMessageIds = (data.matchMessageIds as string[] | undefined) ?? [];
+        const proposalMessageIds = (data.proposalMessageIds as string[] | undefined) ?? [];
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId, matchesMessageId, proposalsMessageId);
+            await startTeamListener(teamId, channelId, messageId, matchMessageIds, proposalMessageIds);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -114,8 +114,8 @@ async function startTeamListener(
     teamId: string,
     channelId: string,
     storedMessageId: string | null,
-    storedMatchesMessageId: string | null = null,
-    storedProposalsMessageId: string | null = null,
+    storedMatchMessageIds: string[] = [],
+    storedProposalMessageIds: string[] = [],
 ): Promise<void> {
     if (!firestoreDb || !botClient) return;
 
@@ -139,8 +139,8 @@ async function startTeamListener(
         teamInfo: null,
         scheduledMatches: [],
         activeProposals: [],
-        matchesMessageId: storedMatchesMessageId ?? null,
-        proposalsMessageId: storedProposalsMessageId ?? null,
+        matchMessageIds: storedMatchMessageIds,
+        proposalMessageIds: storedProposalMessageIds,
     };
 
     activeTeams.set(teamId, state);
@@ -328,12 +328,14 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     botClient, state.channelId, teamId, imageBuffer,
                 );
                 state.messageId = newId;
-                // Grid was re-posted — old secondary messages are now above it, reset them
-                state.matchesMessageId = null;
-                state.proposalsMessageId = null;
+                // Grid was re-posted — old card messages are now above it, delete them
+                await deleteCardMessages(botClient, state.channelId, state.matchMessageIds);
+                await deleteCardMessages(botClient, state.channelId, state.proposalMessageIds);
+                state.matchMessageIds = [];
+                state.proposalMessageIds = [];
                 await firestoreDb!.collection('botRegistrations').doc(teamId).update({
-                    matchesMessageId: null,
-                    proposalsMessageId: null,
+                    matchMessageIds: [],
+                    proposalMessageIds: [],
                 });
             }
         } else {
@@ -348,84 +350,98 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
     }
 
-    // ── Render and post match cards (message #2) ──
-    // Combined canvas (full-width) + link buttons below.
+    // ── Render match + proposal card messages ──
+    // Each card = its own Discord message (image + link button).
+    // If the count of either category changed, wipe ALL card messages and
+    // repost in order (matches first, then proposals) to keep correct ordering.
     try {
-        let matchImage: Buffer | null = null;
+        const matchCards: Array<{ buffer: Buffer; button: ReturnType<typeof buildMatchButton> }> = [];
+        const proposalCards: Array<{ buffer: Buffer; button: ReturnType<typeof buildProposalButton> }> = [];
+
         if (state.scheduledMatches.length > 0 && state.teamInfo) {
             const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
-
-            const cards: MatchCardInput[] = [];
             for (const match of state.scheduledMatches) {
                 const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
-                cards.push({
-                    ownTag: state.teamInfo.teamTag,
-                    ownLogo,
-                    opponentName: match.opponentName,
-                    opponentTag: match.opponentTag,
-                    opponentLogo,
-                    gameType: match.gameType,
-                    scheduledDate: match.scheduledDate,
+                matchCards.push({
+                    buffer: await renderMatchCard({
+                        ownTag: state.teamInfo.teamTag,
+                        ownLogo,
+                        opponentName: match.opponentName,
+                        opponentTag: match.opponentTag,
+                        opponentLogo,
+                        gameType: match.gameType,
+                        scheduledDate: match.scheduledDate,
+                    }),
+                    button: buildMatchButton(teamId, match),
                 });
             }
-            matchImage = await renderMatchesImage(cards);
         }
 
-        const matchButtons = state.scheduledMatches.length > 0
-            ? buildMatchButtons(teamId, state.scheduledMatches)
-            : [];
-
-        const newMatchesMsgId = await updateCardMessage(
-            botClient, state.channelId, state.matchesMessageId, matchImage, matchButtons,
-        );
-
-        if (newMatchesMsgId !== state.matchesMessageId) {
-            state.matchesMessageId = newMatchesMsgId;
-            await firestoreDb.collection('botRegistrations').doc(teamId).update({
-                matchesMessageId: newMatchesMsgId,
-            });
-        }
-    } catch (err) {
-        logger.error('Failed to update matches message', {
-            teamId, error: err instanceof Error ? err.message : String(err),
-        });
-    }
-
-    // ── Render and post proposal cards (message #3) ──
-    try {
-        let proposalImage: Buffer | null = null;
         if (state.activeProposals.length > 0) {
-            const cards: ProposalCardInput[] = [];
             for (const proposal of state.activeProposals) {
                 const opponentLogo = proposal.opponentLogoUrl
                     ? await getTeamLogo(proposal.opponentTag, proposal.opponentLogoUrl)
                     : null;
-                cards.push({
-                    opponentName: proposal.opponentName,
-                    opponentTag: proposal.opponentTag,
-                    opponentLogo,
-                    viableSlots: proposal.viableSlots,
+                proposalCards.push({
+                    buffer: await renderProposalCard({
+                        opponentName: proposal.opponentName,
+                        opponentTag: proposal.opponentTag,
+                        opponentLogo,
+                        viableSlots: proposal.viableSlots,
+                    }),
+                    button: buildProposalButton(proposal),
                 });
             }
-            proposalImage = await renderProposalsImage(cards);
         }
 
-        const proposalButtons = state.activeProposals.length > 0
-            ? buildProposalButtons(state.activeProposals)
-            : [];
+        // Detect if counts changed — if so, wipe everything and repost in order
+        const countsChanged =
+            matchCards.length !== state.matchMessageIds.length ||
+            proposalCards.length !== state.proposalMessageIds.length;
 
-        const newProposalsMsgId = await updateCardMessage(
-            botClient, state.channelId, state.proposalsMessageId, proposalImage, proposalButtons,
-        );
+        if (countsChanged) {
+            // Delete all existing card messages
+            await deleteCardMessages(botClient, state.channelId, state.matchMessageIds);
+            await deleteCardMessages(botClient, state.channelId, state.proposalMessageIds);
 
-        if (newProposalsMsgId !== state.proposalsMessageId) {
-            state.proposalsMessageId = newProposalsMsgId;
+            // Post fresh: matches first, then proposals (correct channel order)
+            const newMatchIds = await syncCardMessages(
+                botClient, state.channelId, [], matchCards,
+            );
+            const newProposalIds = await syncCardMessages(
+                botClient, state.channelId, [], proposalCards,
+            );
+
+            state.matchMessageIds = newMatchIds;
+            state.proposalMessageIds = newProposalIds;
             await firestoreDb.collection('botRegistrations').doc(teamId).update({
-                proposalsMessageId: newProposalsMsgId,
+                matchMessageIds: newMatchIds,
+                proposalMessageIds: newProposalIds,
             });
+        } else {
+            // Counts unchanged — edit in place (no reordering needed)
+            const newMatchIds = await syncCardMessages(
+                botClient, state.channelId, state.matchMessageIds, matchCards,
+            );
+            if (!arraysEqual(newMatchIds, state.matchMessageIds)) {
+                state.matchMessageIds = newMatchIds;
+                await firestoreDb.collection('botRegistrations').doc(teamId).update({
+                    matchMessageIds: newMatchIds,
+                });
+            }
+
+            const newProposalIds = await syncCardMessages(
+                botClient, state.channelId, state.proposalMessageIds, proposalCards,
+            );
+            if (!arraysEqual(newProposalIds, state.proposalMessageIds)) {
+                state.proposalMessageIds = newProposalIds;
+                await firestoreDb.collection('botRegistrations').doc(teamId).update({
+                    proposalMessageIds: newProposalIds,
+                });
+            }
         }
     } catch (err) {
-        logger.error('Failed to update proposals message', {
+        logger.error('Failed to sync card messages', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
@@ -618,4 +634,26 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function arraysEqual(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Delete an array of Discord messages (best-effort, ignores failures). */
+async function deleteCardMessages(client: Client, channelId: string, messageIds: string[]): Promise<void> {
+    if (messageIds.length === 0) return;
+    try {
+        const fetched = await client.channels.fetch(channelId);
+        if (!fetched || !fetched.isTextBased()) return;
+        const channel = fetched as import('discord.js').TextChannel;
+        for (const id of messageIds) {
+            try {
+                const msg = await channel.messages.fetch(id);
+                await msg.delete();
+            } catch { /* already gone */ }
+        }
+    } catch { /* channel gone */ }
 }
