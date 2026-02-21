@@ -44,12 +44,13 @@ export interface MatchCardInput {
 /**
  * Render a single match card as a standalone PNG.
  *
- * Layout — flows left-to-right, uses all available space:
- *   [ownLogo] OFFICIAL vs Hell Xpress [oppLogo]            Sun 22nd 21:30 CET
+ * Layout — left and right groups anchored, "vs" floats centered between them:
+ *   [ownLogo] OFFICIAL      vs      Hell Xpress [oppLogo]  Sun 22nd 21:30 CET
  *   ═══════════════════ accent line (badge color) ════════════════════════════
  *
- * Logos provide the vertical alignment across stacked cards.
- * Opponent name gets all remaining space, truncates only if needed.
+ * Left group (left-aligned):  ownLogo + badge
+ * Right group (right-aligned): oppName + oppLogo + date
+ * "vs" centered in the gap between badge end and oppName start.
  */
 export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
     const canvas = createCanvas(W, MATCH_H);
@@ -63,47 +64,67 @@ export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
 
     const pad = 14;
     const logoGap = 10;
-    let x = pad;
 
-    // ── Own logo ──
-    drawLogo(ctx, input.ownLogo, input.ownTag, x + LOGO_SIZE / 2, centerY, LOGO_SIZE);
-    x += LOGO_SIZE + logoGap;
-
-    // ── Badge text (OFFICIAL / PRACTICE) ──
-    ctx.font = `bold 15px ${FONT}`;
-    ctx.fillStyle = badgeColor;
-    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(badgeText, x, centerY);
-    x += ctx.measureText(badgeText).width;
 
-    // ── " vs " ──
-    ctx.font = `15px ${FONT}`;
-    ctx.fillStyle = COLORS.textSecondary;
-    ctx.fillText(' vs ', x, centerY);
-    x += ctx.measureText(' vs ').width;
+    // ── Measure everything first ──
 
-    // ── Measure date (right-aligned) to know our right boundary ──
+    // Left group: ownLogo + badge
+    const leftGroupEnd = pad + LOGO_SIZE + logoGap;
+    ctx.font = `bold 15px ${FONT}`;
+    const badgeW = ctx.measureText(badgeText).width;
+    const badgeEnd = leftGroupEnd + badgeW;  // right edge of badge text
+
+    // Right group (from right): date + oppLogo + oppName
     const dateFont = `13px ${FONT}`;
     ctx.font = dateFont;
     const dateW = ctx.measureText(input.scheduledDate).width;
+    const dateLeft = W - pad - dateW;
 
-    // ── Opponent name — gets all remaining space before oppLogo + date ──
+    const oppLogoRight = dateLeft - logoGap;          // right edge of opp logo
+    const oppLogoLeft = oppLogoRight - LOGO_SIZE;     // left edge of opp logo
+
+    ctx.font = `bold 16px ${FONT}`;
+    const maxNameW = oppLogoLeft - logoGap - badgeEnd - 40; // 40px min for " vs "
+    const oppName = truncateText(ctx, input.opponentName, maxNameW);
+    const nameW = ctx.measureText(oppName).width;
+    const nameLeft = oppLogoLeft - logoGap - nameW;   // left edge of opp name
+
+    // "vs" centered in the gap between badgeEnd and nameLeft
+    ctx.font = `15px ${FONT}`;
+    const vsW = ctx.measureText('vs').width;
+    const vsCenterX = (badgeEnd + nameLeft) / 2;
+
+    // ── Draw everything ──
+
+    // Own logo
+    drawLogo(ctx, input.ownLogo, input.ownTag, pad + LOGO_SIZE / 2, centerY, LOGO_SIZE);
+
+    // Badge
+    ctx.font = `bold 15px ${FONT}`;
+    ctx.fillStyle = badgeColor;
+    ctx.textAlign = 'left';
+    ctx.fillText(badgeText, leftGroupEnd, centerY);
+
+    // "vs" — centered in gap
+    ctx.font = `15px ${FONT}`;
+    ctx.fillStyle = COLORS.textSecondary;
+    ctx.textAlign = 'center';
+    ctx.fillText('vs', vsCenterX, centerY);
+
+    // Opponent name — right-aligned to before oppLogo
     ctx.font = `bold 16px ${FONT}`;
     ctx.fillStyle = COLORS.textPrimary;
-    const maxNameW = W - x - logoGap - LOGO_SIZE - logoGap - dateW - pad;
-    const oppName = truncateText(ctx, input.opponentName, maxNameW);
-    ctx.fillText(oppName, x, centerY);
-    x += ctx.measureText(oppName).width + logoGap;
+    ctx.textAlign = 'left';
+    ctx.fillText(oppName, nameLeft, centerY);
 
-    // ── Opponent logo ──
-    drawLogo(ctx, input.opponentLogo, input.opponentTag, x + LOGO_SIZE / 2, centerY, LOGO_SIZE);
+    // Opponent logo
+    drawLogo(ctx, input.opponentLogo, input.opponentTag, oppLogoLeft + LOGO_SIZE / 2, centerY, LOGO_SIZE);
 
-    // ── Date — right-aligned ──
+    // Date — right-aligned
     ctx.font = dateFont;
     ctx.fillStyle = COLORS.textSecondary;
     ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
     ctx.fillText(input.scheduledDate, W - pad, centerY);
 
     // Bottom accent line
