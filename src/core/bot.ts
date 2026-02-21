@@ -72,16 +72,17 @@ export async function start(config: Config, modules: BotModule[]): Promise<void>
     // Start health endpoint
     startHealthServer(config.healthPort, modules.map((m) => m.name));
 
-    // Register guild member sync events and refresh caches for all active registrations
-    registerGuildSyncEvents(readyClient);
-    await refreshAllGuildMembers(readyClient);
-
-    // Call onReady on each module
+    // Call onReady on each module (this initializes Firestore among other things)
     for (const mod of modules) {
       if (mod.onReady) {
         await mod.onReady(readyClient);
       }
     }
+
+    // Register guild member sync events and refresh caches for all active registrations
+    // Must run after module onReady so Firestore is initialized
+    registerGuildSyncEvents(readyClient);
+    await refreshAllGuildMembers(readyClient);
   });
 
   await client.login(config.discordToken);
