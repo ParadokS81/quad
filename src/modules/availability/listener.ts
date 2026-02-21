@@ -21,10 +21,11 @@ import {
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
 import {
-    renderMatchesImage, renderProposalsImage,
+    renderMatchCard, renderProposalCard,
     type MatchCardInput, type ProposalCardInput,
+    COLOR_OFFICIAL, COLOR_PRACTICE,
 } from './match-renderer.js';
-import { buildMatchLinksEmbed, buildProposalLinksEmbed, formatScheduledDate } from './embed.js';
+import { buildMatchEmbed, buildProposalEmbed, formatScheduledDate } from './embed.js';
 import { postOrRecoverMessage, updateMessage, updateCardMessage } from './message.js';
 import { getTeamLogo, clearLogoCache } from './logo-cache.js';
 
@@ -348,33 +349,35 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
     }
 
-    // ── Render and post match card images (message #2) ──
+    // ── Render and post match cards (message #2) ──
+    // Each card gets its own embed with setImage for card↔link pairing.
     try {
-        let matchImageBuffer: Buffer | null = null;
+        const matchCards: Array<{ buffer: Buffer; embed: import('discord.js').EmbedBuilder }> = [];
         if (state.scheduledMatches.length > 0 && state.teamInfo) {
             const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
 
-            const cards: MatchCardInput[] = [];
-            for (const match of state.scheduledMatches) {
+            for (let i = 0; i < state.scheduledMatches.length; i++) {
+                const match = state.scheduledMatches[i]!;
                 const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
-                cards.push({
+                const buffer = await renderMatchCard({
                     ownTag: state.teamInfo.teamTag,
                     ownLogo,
+                    opponentName: match.opponentName,
                     opponentTag: match.opponentTag,
                     opponentLogo,
                     gameType: match.gameType,
                     scheduledDate: match.scheduledDate,
                 });
+                const colorInt = match.gameType === 'official'
+                    ? parseInt(COLOR_OFFICIAL.slice(1), 16)
+                    : parseInt(COLOR_PRACTICE.slice(1), 16);
+                const embed = buildMatchEmbed(teamId, match, `card-${i}.png`, colorInt);
+                matchCards.push({ buffer, embed });
             }
-            matchImageBuffer = await renderMatchesImage(cards);
         }
 
-        const matchEmbed = state.scheduledMatches.length > 0
-            ? buildMatchLinksEmbed(teamId, state.scheduledMatches)
-            : null;
-
         const newMatchesMsgId = await updateCardMessage(
-            botClient, state.channelId, state.matchesMessageId, matchImageBuffer, matchEmbed,
+            botClient, state.channelId, state.matchesMessageId, matchCards,
         );
 
         if (newMatchesMsgId !== state.matchesMessageId) {
@@ -389,30 +392,28 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
     }
 
-    // ── Render and post proposal card images (message #3) ──
+    // ── Render and post proposal cards (message #3) ──
     try {
-        let proposalImageBuffer: Buffer | null = null;
+        const proposalCards: Array<{ buffer: Buffer; embed: import('discord.js').EmbedBuilder }> = [];
         if (state.activeProposals.length > 0) {
-            const cards: ProposalCardInput[] = [];
-            for (const proposal of state.activeProposals) {
+            for (let i = 0; i < state.activeProposals.length; i++) {
+                const proposal = state.activeProposals[i]!;
                 const opponentLogo = proposal.opponentLogoUrl
                     ? await getTeamLogo(proposal.opponentTag, proposal.opponentLogoUrl)
                     : null;
-                cards.push({
+                const buffer = await renderProposalCard({
+                    opponentName: proposal.opponentName,
                     opponentTag: proposal.opponentTag,
                     opponentLogo,
                     viableSlots: proposal.viableSlots,
                 });
+                const embed = buildProposalEmbed(teamId, proposal.opponentTag, `card-${i}.png`);
+                proposalCards.push({ buffer, embed });
             }
-            proposalImageBuffer = await renderProposalsImage(cards);
         }
 
-        const proposalEmbed = state.activeProposals.length > 0
-            ? buildProposalLinksEmbed(teamId)
-            : null;
-
         const newProposalsMsgId = await updateCardMessage(
-            botClient, state.channelId, state.proposalsMessageId, proposalImageBuffer, proposalEmbed,
+            botClient, state.channelId, state.proposalsMessageId, proposalCards,
         );
 
         if (newProposalsMsgId !== state.proposalsMessageId) {

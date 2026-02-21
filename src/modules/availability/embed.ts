@@ -1,7 +1,8 @@
 /**
  * Embed builder for the persistent schedule message.
  *
- * Builds a minimal embed with clickable match links shown below the grid image.
+ * Builds per-card embeds with setImage() for pairing each card's
+ * canvas image with its clickable link in Discord.
  */
 
 import { EmbedBuilder } from 'discord.js';
@@ -42,29 +43,34 @@ export function formatScheduledDate(slotId: string, weekId: string): string {
 const SCHEDULER_BASE = 'https://scheduler.quake.world';
 
 /**
- * Build a minimal embed with clickable H2H links below the match card images.
- * The canvas cards handle the visual — this just provides clickable links.
+ * Build a per-match embed with its card image and H2H link.
+ * The `attachmentName` is set via setImage('attachment://...') to pair
+ * this embed with its card PNG in the same message.
  */
-export function buildMatchLinksEmbed(
+export function buildMatchEmbed(
     teamId: string,
-    matches: Array<{ opponentTag: string; opponentId: string }>,
+    match: { opponentTag: string; opponentId: string },
+    attachmentName: string,
+    color: number,
 ): EmbedBuilder {
-    const lines = matches.map(m => {
-        const url = `${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${m.opponentId}`;
-        return `[vs ${m.opponentTag} \u2014 H2H Stats](${url})`;
-    });
-
+    const url = `${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${match.opponentId}`;
     return new EmbedBuilder()
-        .setDescription(lines.join('\n'))
-        .setColor(0x8b7cf0);
+        .setImage(`attachment://${attachmentName}`)
+        .setDescription(`[vs ${match.opponentTag} \u2014 H2H Stats](${url})`)
+        .setColor(color);
 }
 
 /**
- * Build a minimal embed linking to proposals on the scheduler site.
+ * Build a per-proposal embed with its card image and scheduler link.
  */
-export function buildProposalLinksEmbed(teamId: string): EmbedBuilder {
+export function buildProposalEmbed(
+    teamId: string,
+    opponentTag: string,
+    attachmentName: string,
+): EmbedBuilder {
     const url = `${SCHEDULER_BASE}/#/teams/${teamId}`;
     return new EmbedBuilder()
-        .setDescription(`[View proposals on scheduler.quake.world](${url})`)
+        .setImage(`attachment://${attachmentName}`)
+        .setDescription(`[vs ${opponentTag} \u2014 View on scheduler](${url})`)
         .setColor(0x4a4d6a);
 }

@@ -180,16 +180,18 @@ export async function updateMessage(
 /**
  * Post or update a card message (matches or proposals).
  *
- * Takes a single combined PNG (all cards composited into one image)
- * plus an optional link embed below. Deletes the message when empty.
+ * Each card is a separate PNG paired with its own embed via setImage().
+ * Discord renders embeds vertically, so each card appears with its
+ * clickable link directly below it.
+ *
+ * Deletes the message when there are no cards.
  * Returns the message ID or null.
  */
 export async function updateCardMessage(
     client: Client,
     channelId: string,
     existingMessageId: string | null,
-    imageBuffer: Buffer | null,
-    embed: EmbedBuilder | null,
+    cards: Array<{ buffer: Buffer; embed: EmbedBuilder }>,
 ): Promise<string | null> {
     let channel: TextChannel;
     try {
@@ -200,8 +202,8 @@ export async function updateCardMessage(
         return null;
     }
 
-    // No content — delete old message if it exists
-    if (!imageBuffer && !embed) {
+    // No cards — delete old message if it exists
+    if (cards.length === 0) {
         if (existingMessageId) {
             try {
                 const msg = await channel.messages.fetch(existingMessageId);
@@ -211,11 +213,11 @@ export async function updateCardMessage(
         return null;
     }
 
-    // Build payload
-    const files = imageBuffer
-        ? [new AttachmentBuilder(imageBuffer, { name: 'cards.png' })]
-        : [];
-    const embeds = embed ? [embed] : [];
+    // Build payload: each card gets a named attachment + embed with setImage
+    const files = cards.map((c, i) =>
+        new AttachmentBuilder(c.buffer, { name: `card-${i}.png` }),
+    );
+    const embeds = cards.map(c => c.embed);
     const payload = { files, embeds };
 
     // Try to edit existing
