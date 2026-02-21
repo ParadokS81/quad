@@ -268,13 +268,13 @@ function drawCell(
     ctx.fillStyle = bgColor;
     ctx.fillRect(x + 1, y + 1, w - 2, CELL_H - 2);
 
-    // Scheduled match: show sword + opponent tag
+    // Scheduled match: show opponent tag
     if (scheduledMatch) {
         ctx.fillStyle = COLORS.textPrimary;
         ctx.font = `bold 11px ${FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`\u2694 vs ${scheduledMatch.opponentTag}`, x + w / 2, y + CELL_H / 2);
+        ctx.fillText(scheduledMatch.opponentTag, x + w / 2, y + CELL_H / 2);
         return;
     }
 
