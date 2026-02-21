@@ -11,6 +11,7 @@ import {
     AttachmentBuilder,
     type EmbedBuilder,
     ActionRowBuilder,
+    type ButtonBuilder,
     type StringSelectMenuBuilder,
 } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
@@ -180,18 +181,17 @@ export async function updateMessage(
 /**
  * Post or update a card message (matches or proposals).
  *
- * Each card is a separate PNG paired with its own embed via setImage().
- * Discord renders embeds vertically, so each card appears with its
- * clickable link directly below it.
- *
- * Deletes the message when there are no cards.
+ * Takes a single combined canvas PNG (full-width regular attachment)
+ * plus link button action rows below.
+ * Deletes the message when there's no content.
  * Returns the message ID or null.
  */
 export async function updateCardMessage(
     client: Client,
     channelId: string,
     existingMessageId: string | null,
-    cards: Array<{ buffer: Buffer; embed: EmbedBuilder }>,
+    imageBuffer: Buffer | null,
+    buttonRows: ActionRowBuilder<ButtonBuilder>[],
 ): Promise<string | null> {
     let channel: TextChannel;
     try {
@@ -202,8 +202,8 @@ export async function updateCardMessage(
         return null;
     }
 
-    // No cards — delete old message if it exists
-    if (cards.length === 0) {
+    // No content — delete old message if it exists
+    if (!imageBuffer && buttonRows.length === 0) {
         if (existingMessageId) {
             try {
                 const msg = await channel.messages.fetch(existingMessageId);
@@ -213,12 +213,11 @@ export async function updateCardMessage(
         return null;
     }
 
-    // Build payload: each card gets a named attachment + embed with setImage
-    const files = cards.map((c, i) =>
-        new AttachmentBuilder(c.buffer, { name: `card-${i}.png` }),
-    );
-    const embeds = cards.map(c => c.embed);
-    const payload = { files, embeds };
+    // Build payload
+    const files = imageBuffer
+        ? [new AttachmentBuilder(imageBuffer, { name: 'cards.png' })]
+        : [];
+    const payload = { files, embeds: [], components: buttonRows };
 
     // Try to edit existing
     if (existingMessageId) {

@@ -1,9 +1,9 @@
 /**
  * Canvas renderer for match and proposal cards.
  *
- * Each card is rendered individually and paired with a Discord embed
- * via setImage('attachment://...') — this lets Discord stack them
- * vertically with each card's clickable link directly below it.
+ * Cards are composited into a single combined canvas per category.
+ * Sent as a regular Discord attachment (full-width) with link buttons
+ * below for navigation.
  *
  * Match card:    550 × 50px — [ownLogo] OFFICIAL vs Full Name [oppLogo]  date
  * Proposal card: 550 × 44px — [oppLogo] vs Full Name  ·  N viable slots
@@ -18,6 +18,7 @@ import { COLORS, FONT } from './renderer.js';
 const W = 550;
 const MATCH_H = 50;
 const PROPOSAL_H = 44;
+const CARD_GAP = 6;             // gap between stacked cards
 const LOGO_SIZE = 36;           // match card logo diameter
 const LOGO_SIZE_SM = 28;        // proposal card logo diameter
 const CARD_RADIUS = 6;          // corner radius
@@ -42,24 +43,37 @@ export interface MatchCardInput {
 }
 
 /**
- * Render a single match card as a PNG buffer.
+ * Render all match cards into a single combined PNG.
+ * Cards are stacked vertically with a small gap between them.
+ */
+export async function renderMatchesImage(cards: MatchCardInput[]): Promise<Buffer> {
+    if (cards.length === 0) return Buffer.alloc(0);
+
+    const totalH = cards.length * MATCH_H + (cards.length - 1) * CARD_GAP;
+    const canvas = createCanvas(W, totalH);
+    const ctx = canvas.getContext('2d');
+
+    for (let i = 0; i < cards.length; i++) {
+        drawMatchCard(ctx, i * (MATCH_H + CARD_GAP), cards[i]!);
+    }
+
+    return canvas.toBuffer('image/png');
+}
+
+/**
+ * Draw a single match card at y offset.
  *
  * Layout (single row, full width):
  *   [ownLogo]  OFFICIAL vs Hell Express  [oppLogo]     Sun 22nd 21:30 CET
  *   ════════════ accent line (badge color) ════════════════════════════════
  */
-export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
-    const canvas = createCanvas(W, MATCH_H);
-    const ctx = canvas.getContext('2d');
-
+function drawMatchCard(ctx: SKRSContext2D, y: number, input: MatchCardInput): void {
     // Background
-    drawRoundedRect(ctx, 0, 0, W, MATCH_H, CARD_RADIUS, COLORS.cellEmpty);
+    drawRoundedRect(ctx, 0, y, W, MATCH_H, CARD_RADIUS, COLORS.cellEmpty);
 
     const badgeColor = input.gameType === 'official' ? COLOR_OFFICIAL : COLOR_PRACTICE;
     const badgeText = input.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
-    const centerY = (MATCH_H - 2) / 2; // -2 for accent line
-
-    // ── Left group: [ownLogo]  BADGE vs OpponentName  [oppLogo] ──
+    const centerY = y + (MATCH_H - 2) / 2; // -2 for accent line
 
     const pad = 14;
     const logoGap = 10;
@@ -87,8 +101,7 @@ export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
     // Opponent name (full clan name)
     ctx.font = `bold 14px ${FONT}`;
     ctx.fillStyle = COLORS.textPrimary;
-    // Truncate if it would overlap the date area
-    const maxNameW = W - x - logoGap - LOGO_SIZE - 16 - 140; // 140 reserved for date
+    const maxNameW = W - x - logoGap - LOGO_SIZE - 16 - 140;
     const oppName = truncateText(ctx, input.opponentName, maxNameW);
     ctx.fillText(oppName, x, centerY);
     x += ctx.measureText(oppName).width + logoGap;
@@ -96,20 +109,18 @@ export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
     // Opponent logo
     drawLogo(ctx, input.opponentLogo, input.opponentTag, x + LOGO_SIZE / 2, centerY, LOGO_SIZE);
 
-    // ── Right-aligned: date/time ──
+    // Right-aligned: date/time
     ctx.font = `12px ${FONT}`;
     ctx.fillStyle = COLORS.textSecondary;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     ctx.fillText(input.scheduledDate, W - pad, centerY);
 
-    // ── Bottom accent line ──
+    // Bottom accent line
     ctx.fillStyle = badgeColor;
     ctx.globalAlpha = 0.5;
-    ctx.fillRect(0, MATCH_H - 2, W, 2);
+    ctx.fillRect(0, y + MATCH_H - 2, W, 2);
     ctx.globalAlpha = 1.0;
-
-    return canvas.toBuffer('image/png');
 }
 
 // ── Proposal card ───────────────────────────────────────────────────────────
@@ -122,19 +133,30 @@ export interface ProposalCardInput {
 }
 
 /**
- * Render a single proposal card as a PNG buffer.
- *
- * Layout (single row):
- *   [oppLogo]  vs Suddendeath  ·  3 viable slots
+ * Render all proposal cards into a single combined PNG.
  */
-export async function renderProposalCard(input: ProposalCardInput): Promise<Buffer> {
-    const canvas = createCanvas(W, PROPOSAL_H);
+export async function renderProposalsImage(cards: ProposalCardInput[]): Promise<Buffer> {
+    if (cards.length === 0) return Buffer.alloc(0);
+
+    const totalH = cards.length * PROPOSAL_H + (cards.length - 1) * CARD_GAP;
+    const canvas = createCanvas(W, totalH);
     const ctx = canvas.getContext('2d');
 
-    // Background
-    drawRoundedRect(ctx, 0, 0, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
+    for (let i = 0; i < cards.length; i++) {
+        drawProposalCard(ctx, i * (PROPOSAL_H + CARD_GAP), cards[i]!);
+    }
 
-    const centerY = PROPOSAL_H / 2;
+    return canvas.toBuffer('image/png');
+}
+
+/**
+ * Draw a single proposal card at y offset.
+ */
+function drawProposalCard(ctx: SKRSContext2D, y: number, input: ProposalCardInput): void {
+    // Background
+    drawRoundedRect(ctx, 0, y, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
+
+    const centerY = y + PROPOSAL_H / 2;
     const pad = 14;
     let x = pad;
 
@@ -159,10 +181,8 @@ export async function renderProposalCard(input: ProposalCardInput): Promise<Buff
     // Subtle left accent bar
     ctx.fillStyle = COLORS.todayHighlight;
     ctx.globalAlpha = 0.4;
-    ctx.fillRect(0, 0, 3, PROPOSAL_H);
+    ctx.fillRect(0, y, 3, PROPOSAL_H);
     ctx.globalAlpha = 1.0;
-
-    return canvas.toBuffer('image/png');
 }
 
 // ── Drawing helpers ──────────────────────────────────────────────────────────

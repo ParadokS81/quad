@@ -42,6 +42,7 @@ export interface ScheduledMatchDisplay {
 
 /** Enriched proposal data for canvas rendering. */
 export interface ActiveProposalDisplay {
+    proposalId: string;          // Firestore doc ID for deep-linking
     opponentTag: string;
     opponentName: string;
     viableSlots: number;

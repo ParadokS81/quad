@@ -21,11 +21,10 @@ import {
 import { getCurrentWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
 import {
-    renderMatchCard, renderProposalCard,
+    renderMatchesImage, renderProposalsImage,
     type MatchCardInput, type ProposalCardInput,
-    COLOR_OFFICIAL, COLOR_PRACTICE,
 } from './match-renderer.js';
-import { buildMatchEmbed, buildProposalEmbed, formatScheduledDate } from './embed.js';
+import { buildMatchButtons, buildProposalButtons, formatScheduledDate } from './embed.js';
 import { postOrRecoverMessage, updateMessage, updateCardMessage } from './message.js';
 import { getTeamLogo, clearLogoCache } from './logo-cache.js';
 
@@ -350,16 +349,16 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
     }
 
     // ── Render and post match cards (message #2) ──
-    // Each card gets its own embed with setImage for card↔link pairing.
+    // Combined canvas (full-width) + link buttons below.
     try {
-        const matchCards: Array<{ buffer: Buffer; embed: import('discord.js').EmbedBuilder }> = [];
+        let matchImage: Buffer | null = null;
         if (state.scheduledMatches.length > 0 && state.teamInfo) {
             const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
 
-            for (let i = 0; i < state.scheduledMatches.length; i++) {
-                const match = state.scheduledMatches[i]!;
+            const cards: MatchCardInput[] = [];
+            for (const match of state.scheduledMatches) {
                 const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
-                const buffer = await renderMatchCard({
+                cards.push({
                     ownTag: state.teamInfo.teamTag,
                     ownLogo,
                     opponentName: match.opponentName,
@@ -368,16 +367,16 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     gameType: match.gameType,
                     scheduledDate: match.scheduledDate,
                 });
-                const colorInt = match.gameType === 'official'
-                    ? parseInt(COLOR_OFFICIAL.slice(1), 16)
-                    : parseInt(COLOR_PRACTICE.slice(1), 16);
-                const embed = buildMatchEmbed(teamId, match, `card-${i}.png`, colorInt);
-                matchCards.push({ buffer, embed });
             }
+            matchImage = await renderMatchesImage(cards);
         }
 
+        const matchButtons = state.scheduledMatches.length > 0
+            ? buildMatchButtons(teamId, state.scheduledMatches)
+            : [];
+
         const newMatchesMsgId = await updateCardMessage(
-            botClient, state.channelId, state.matchesMessageId, matchCards,
+            botClient, state.channelId, state.matchesMessageId, matchImage, matchButtons,
         );
 
         if (newMatchesMsgId !== state.matchesMessageId) {
@@ -394,26 +393,29 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
 
     // ── Render and post proposal cards (message #3) ──
     try {
-        const proposalCards: Array<{ buffer: Buffer; embed: import('discord.js').EmbedBuilder }> = [];
+        let proposalImage: Buffer | null = null;
         if (state.activeProposals.length > 0) {
-            for (let i = 0; i < state.activeProposals.length; i++) {
-                const proposal = state.activeProposals[i]!;
+            const cards: ProposalCardInput[] = [];
+            for (const proposal of state.activeProposals) {
                 const opponentLogo = proposal.opponentLogoUrl
                     ? await getTeamLogo(proposal.opponentTag, proposal.opponentLogoUrl)
                     : null;
-                const buffer = await renderProposalCard({
+                cards.push({
                     opponentName: proposal.opponentName,
                     opponentTag: proposal.opponentTag,
                     opponentLogo,
                     viableSlots: proposal.viableSlots,
                 });
-                const embed = buildProposalEmbed(teamId, proposal.opponentTag, `card-${i}.png`);
-                proposalCards.push({ buffer, embed });
             }
+            proposalImage = await renderProposalsImage(cards);
         }
 
+        const proposalButtons = state.activeProposals.length > 0
+            ? buildProposalButtons(state.activeProposals)
+            : [];
+
         const newProposalsMsgId = await updateCardMessage(
-            botClient, state.channelId, state.proposalsMessageId, proposalCards,
+            botClient, state.channelId, state.proposalsMessageId, proposalImage, proposalButtons,
         );
 
         if (newProposalsMsgId !== state.proposalsMessageId) {
@@ -542,6 +544,7 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
                 if (oppId) opponentTeamIds.add(oppId);
 
                 activeProposals.push({
+                    proposalId: doc.id,
                     opponentTag: isProposer
                         ? String(data.opponentTeamTag ?? '?')
                         : String(data.proposerTeamTag ?? '?'),

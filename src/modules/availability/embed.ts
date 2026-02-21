@@ -1,11 +1,11 @@
 /**
- * Embed builder for the persistent schedule message.
+ * Link button builders for match and proposal card messages.
  *
- * Builds per-card embeds with setImage() for pairing each card's
- * canvas image with its clickable link in Discord.
+ * Each match/proposal gets a Discord Link Button (ButtonStyle.Link)
+ * that opens the relevant page on scheduler.quake.world.
  */
 
-import { EmbedBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { getWeekDates, utcToCet } from './time.js';
 
 const DAY_LABELS: Record<string, string> = {
@@ -43,34 +43,48 @@ export function formatScheduledDate(slotId: string, weekId: string): string {
 const SCHEDULER_BASE = 'https://scheduler.quake.world';
 
 /**
- * Build a per-match embed with its card image and H2H link.
- * The `attachmentName` is set via setImage('attachment://...') to pair
- * this embed with its card PNG in the same message.
+ * Build action rows with H2H link buttons for scheduled matches.
+ * Each match gets a button: "vs OpponentTag" → H2H page.
+ * Up to 5 buttons per row, up to 5 rows (25 matches max).
  */
-export function buildMatchEmbed(
+export function buildMatchButtons(
     teamId: string,
-    match: { opponentTag: string; opponentId: string },
-    attachmentName: string,
-    color: number,
-): EmbedBuilder {
-    const url = `${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${match.opponentId}`;
-    return new EmbedBuilder()
-        .setImage(`attachment://${attachmentName}`)
-        .setDescription(`[vs ${match.opponentTag} \u2014 H2H Stats](${url})`)
-        .setColor(color);
+    matches: Array<{ opponentTag: string; opponentId: string }>,
+): ActionRowBuilder<ButtonBuilder>[] {
+    const buttons = matches.map(m =>
+        new ButtonBuilder()
+            .setLabel(`H2H vs ${m.opponentTag}`)
+            .setURL(`${SCHEDULER_BASE}/#/teams/${teamId}/h2h/${m.opponentId}`)
+            .setStyle(ButtonStyle.Link),
+    );
+
+    return chunkIntoRows(buttons);
 }
 
 /**
- * Build a per-proposal embed with its card image and scheduler link.
+ * Build action rows with proposal link buttons.
+ * Each proposal gets a button: "vs OpponentTag" → proposal deep-link.
  */
-export function buildProposalEmbed(
-    teamId: string,
-    opponentTag: string,
-    attachmentName: string,
-): EmbedBuilder {
-    const url = `${SCHEDULER_BASE}/#/teams/${teamId}`;
-    return new EmbedBuilder()
-        .setImage(`attachment://${attachmentName}`)
-        .setDescription(`[vs ${opponentTag} \u2014 View on scheduler](${url})`)
-        .setColor(0x4a4d6a);
+export function buildProposalButtons(
+    proposals: Array<{ proposalId: string; opponentTag: string }>,
+): ActionRowBuilder<ButtonBuilder>[] {
+    const buttons = proposals.map(p =>
+        new ButtonBuilder()
+            .setLabel(`vs ${p.opponentTag}`)
+            .setURL(`${SCHEDULER_BASE}/#/matches/${p.proposalId}`)
+            .setStyle(ButtonStyle.Link),
+    );
+
+    return chunkIntoRows(buttons);
+}
+
+/** Split buttons into action rows (max 5 buttons per row). */
+function chunkIntoRows(buttons: ButtonBuilder[]): ActionRowBuilder<ButtonBuilder>[] {
+    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+    for (let i = 0; i < buttons.length; i += 5) {
+        const row = new ActionRowBuilder<ButtonBuilder>()
+            .addComponents(buttons.slice(i, i + 5));
+        rows.push(row);
+    }
+    return rows;
 }
