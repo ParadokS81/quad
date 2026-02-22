@@ -83,16 +83,35 @@ async function handleCreateChannelRequest(
 
   try {
     const guild = await client.guilds.fetch(guildId);
+    const channels = await guild.channels.fetch();
     const me = guild.members.me;
 
     if (!me) {
       throw new Error('Bot member not found in guild');
     }
 
+    // Find the category that most text channels live in (if any)
+    const textChannels = channels.filter(ch => ch !== null && ch.type === ChannelType.GuildText);
+    const parentCounts = new Map<string | null, number>();
+    for (const [, ch] of textChannels) {
+      const pid = ch!.parentId;
+      parentCounts.set(pid, (parentCounts.get(pid) ?? 0) + 1);
+    }
+    // Pick the most common parent (excluding null/uncategorized)
+    let bestParent: string | null = null;
+    let bestCount = 0;
+    for (const [pid, count] of parentCounts) {
+      if (pid !== null && count > bestCount) {
+        bestParent = pid;
+        bestCount = count;
+      }
+    }
+
     // Create a text channel: everyone can read, only bot can write
     const channel = await guild.channels.create({
       name: channelName,
       type: ChannelType.GuildText,
+      parent: bestParent ?? undefined,
       permissionOverwrites: [
         {
           id: guild.roles.everyone.id,
