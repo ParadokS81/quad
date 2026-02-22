@@ -121,9 +121,10 @@ export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
     // Opponent logo
     drawLogo(ctx, input.opponentLogo, input.opponentTag, oppLogoLeft + LOGO_SIZE / 2, centerY, LOGO_SIZE);
 
-    // Date — right-aligned
+    // Date — right-aligned (TONIGHT highlighted in badge color)
     ctx.font = dateFont;
-    ctx.fillStyle = COLORS.textSecondary;
+    const isTonight = input.scheduledDate.startsWith('TONIGHT');
+    ctx.fillStyle = isTonight ? badgeColor : COLORS.textSecondary;
     ctx.textAlign = 'right';
     ctx.fillText(input.scheduledDate, W - pad, centerY);
 

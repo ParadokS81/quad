@@ -37,6 +37,18 @@ export function formatScheduledDate(slotId: string, weekId: string): string {
     const dateInfo = weekDates[dayIdx];
     if (!dateInfo) return `${DAY_LABELS[cetDay] ?? cetDay} ${cetTime} CET`;
 
+    // "TONIGHT 21:30" when match is today (CET)
+    const now = new Date();
+    const cetNow = new Date(now.getTime() + 1 * 3600_000); // UTC+1
+    const slotFullDate = cetDay !== utcDay
+        ? new Date(dateInfo.fullDate.getTime() + 86400_000)
+        : dateInfo.fullDate;
+    if (slotFullDate.getUTCDate() === cetNow.getUTCDate()
+        && slotFullDate.getUTCMonth() === cetNow.getUTCMonth()
+        && slotFullDate.getUTCFullYear() === cetNow.getUTCFullYear()) {
+        return `TONIGHT ${cetTime}`;
+    }
+
     return `${DAY_LABELS[cetDay] ?? cetDay} ${dateInfo.date}${getOrdinal(dateInfo.date)} ${cetTime} CET`;
 }
 
