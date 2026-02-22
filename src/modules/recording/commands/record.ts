@@ -606,14 +606,9 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
     actions.push('Cleared joining lock');
   }
 
-  // 3. Destroy any @discordjs/voice connection state
-  const vc = getVoiceConnection(guildId);
-  if (vc) {
-    try { vc.destroy(); } catch { /* */ }
-    actions.push('Destroyed voice connection');
-  }
-
-  // 4. Force-disconnect from voice at gateway level (raw opcode 4)
+  // 3. Force-disconnect from voice at gateway level FIRST (raw opcode 4)
+  //    Must happen before vc.destroy() — destroy() clears the local voice state,
+  //    so guild.members.me.voice.channelId becomes null and we'd skip this step.
   const guild = interaction.guild;
   if (guild?.members.me?.voice.channelId) {
     const channelName = guild.members.me.voice.channel?.name;
@@ -626,6 +621,13 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
     } catch {
       actions.push('Gateway disconnect failed');
     }
+  }
+
+  // 4. Destroy any @discordjs/voice connection state (after gateway disconnect)
+  const vc = getVoiceConnection(guildId);
+  if (vc) {
+    try { vc.destroy(); } catch { /* */ }
+    actions.push('Destroyed voice connection');
   }
 
   if (actions.length === 0) {
