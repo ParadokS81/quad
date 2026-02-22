@@ -27,6 +27,9 @@ export const recordCommand = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub.setName('stop').setDescription('Stop recording and save files')
+  )
+  .addSubcommand((sub) =>
+    sub.setName('reset').setDescription('Force-reset: stop recording, leave voice, clear all state')
   ) as SlashCommandBuilder;
 
 // Module-level state — per-guild sessions for concurrent multi-server recording
@@ -300,6 +303,9 @@ export async function handleRecordCommand(interaction: ChatInputCommandInteracti
       break;
     case 'stop':
       await handleStop(interaction);
+      break;
+    case 'reset':
+      await handleReset(interaction);
       break;
     default:
       await interaction.reply({ content: `Unknown subcommand: ${subcommand}`, flags: MessageFlags.Ephemeral });
@@ -576,4 +582,59 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
 
   // Fire post-recording callbacks (e.g., auto-trigger processing)
   fireStopCallbacks(summary);
+}
+
+async function handleReset(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: 'Must be used in a server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const actions: string[] = [];
+
+  // 1. Stop any active recording for this guild
+  if (activeSessions.has(guildId)) {
+    const session = activeSessions.get(guildId)!;
+    await stopRecording(guildId);
+    actions.push(`Stopped recording (session ${session.sessionId.slice(0, 8)})`);
+  }
+
+  // 2. Clear joining lock
+  if (joiningGuilds.has(guildId)) {
+    joiningGuilds.delete(guildId);
+    actions.push('Cleared joining lock');
+  }
+
+  // 3. Destroy any @discordjs/voice connection state
+  const vc = getVoiceConnection(guildId);
+  if (vc) {
+    try { vc.destroy(); } catch { /* */ }
+    actions.push('Destroyed voice connection');
+  }
+
+  // 4. Force-disconnect from voice at gateway level (raw opcode 4)
+  const guild = interaction.guild;
+  if (guild?.members.me?.voice.channelId) {
+    const channelName = guild.members.me.voice.channel?.name;
+    try {
+      guild.shard.send({
+        op: 4,
+        d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
+      });
+      actions.push(`Gateway disconnect from voice channel "${channelName}"`);
+    } catch {
+      actions.push('Gateway disconnect failed');
+    }
+  }
+
+  if (actions.length === 0) {
+    await interaction.reply({ content: 'Nothing to reset — no active recording, no voice connection.', flags: MessageFlags.Ephemeral });
+  } else {
+    logger.info('Manual reset performed', { guildId, actions });
+    await interaction.reply({
+      content: `**Reset complete:**\n${actions.map(a => `- ${a}`).join('\n')}`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
 }
