@@ -196,8 +196,9 @@ async function joinWithRetry(opts: {
   sessionId: string;
 }): Promise<VoiceConnection | null> {
   const { voiceChannel, guildId, sessionId } = opts;
-  const maxAttempts = 2;
-  const timeout = 30_000;
+  const maxAttempts = 3;
+  const timeoutPerAttempt = 15_000;
+  const maxBounces = 4; // Signalling↔Connecting cycles before giving up early
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const connection = joinVoiceChannel({
@@ -206,38 +207,72 @@ async function joinWithRetry(opts: {
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: true,
+      debug: true,
     });
 
-    // Log state transitions for debugging
+    // Log DAVE/networking debug events (shows opcodes, DAVE negotiation, UDP state)
+    const debugLog = (message: string) => {
+      logger.debug('Voice debug', { sessionId, attempt, message });
+    };
+    connection.on('debug', debugLog);
+
+    // Track state bounces — if Signalling↔Connecting loops too many times, bail early
+    let bounceCount = 0;
+    let lastStatus = '';
+    let abortController: AbortController | null = new AbortController();
+
     const stateLog = (oldState: { status: string }, newState: { status: string }) => {
-      logger.info('Voice connection state change', {
+      logger.info('Voice state', {
         sessionId, attempt,
         from: oldState.status, to: newState.status,
       });
+
+      // Detect the auto-rejoin loop: Connecting→Signalling→Connecting...
+      if (newState.status === VoiceConnectionStatus.Signalling && lastStatus === VoiceConnectionStatus.Connecting) {
+        bounceCount++;
+        if (bounceCount >= maxBounces) {
+          logger.warn('Voice connection stuck in Signalling↔Connecting loop — aborting attempt early', {
+            sessionId, attempt, bounceCount,
+          });
+          abortController?.abort();
+        }
+      }
+      lastStatus = newState.status;
     };
     connection.on('stateChange', stateLog);
 
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, timeout);
+      // Combine timeout + bounce detection into one abort signal (Node 22+ required)
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(timeoutPerAttempt),
+        abortController.signal,
+      ]);
+      await entersState(connection, VoiceConnectionStatus.Ready, signal);
       connection.off('stateChange', stateLog);
+      connection.off('debug', debugLog);
+      abortController = null;
       return connection;
     } catch {
       connection.off('stateChange', stateLog);
+      connection.off('debug', debugLog);
+      abortController = null;
       const isLastAttempt = attempt === maxAttempts;
 
       logger.warn('Voice connection failed', {
         sessionId, guildId,
         channel: voiceChannel.name,
         attempt: `${attempt}/${maxAttempts}`,
-        timeoutMs: timeout,
+        bounceCount,
+        timeoutMs: timeoutPerAttempt,
       });
 
       // Just destroy the connection — do NOT create temp connections (poisons DAVE state)
       try { connection.destroy(); } catch { /* already destroyed */ }
 
       if (!isLastAttempt) {
-        logger.info('Retrying voice connection in 2s', { sessionId, attempt });
-        await new Promise((r) => setTimeout(r, 2000));
+        // 5s delay — Discord needs time to fully tear down the DAVE session
+        logger.info('Retrying voice connection in 5s', { sessionId, attempt });
+        await new Promise((r) => setTimeout(r, 5000));
       }
     }
   }
@@ -391,7 +426,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
     await interaction.editReply({
       content: [
-        'Failed to join voice channel after 2 attempts. Make sure the bot has all three permissions on this channel:',
+        'Failed to join voice channel after 3 attempts. Make sure the bot has all three permissions on this channel:',
         '',
         '  •  **View Channel**',
         '  •  **Connect**',

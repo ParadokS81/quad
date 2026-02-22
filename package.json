@@ -21,7 +21,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@discordjs/opus": "^0.10.0",
-    "@discordjs/voice": "^0.19.0",
+    "@discordjs/voice": "^0.19.1-dev.1771286636-ccce987fa",
     "@napi-rs/canvas": "^0.1.94",
     "@snazzah/davey": "^0.1.9",
     "@types/js-yaml": "^4.0.9",
