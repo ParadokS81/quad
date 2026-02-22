@@ -16,6 +16,7 @@ import { logger } from '../../core/logger.js';
 import { initFirestore } from '../standin/firestore.js';
 import { startListening, stopListening } from './listener.js';
 import { syncAllGuildChannels } from './channels.js';
+import { startCreateChannelListener, stopCreateChannelListener } from './create-channel-listener.js';
 
 export const schedulerModule: BotModule = {
   name: 'scheduler',
@@ -40,6 +41,7 @@ export const schedulerModule: BotModule = {
     try {
       const db = initFirestore(); // Idempotent — reuses existing instance
       startListening(db, client);
+      startCreateChannelListener(db, client);
 
       // Sync channel lists for all registered guilds
       await syncAllGuildChannels(db, client);
@@ -53,6 +55,7 @@ export const schedulerModule: BotModule = {
   },
 
   async onShutdown(): Promise<void> {
+    stopCreateChannelListener();
     stopListening();
     logger.info('Scheduler module shut down');
   },

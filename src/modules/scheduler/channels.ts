@@ -16,7 +16,7 @@ interface ChannelInfo {
 /**
  * Get all text channels the bot can see in a guild, with posting permission info.
  */
-async function getTextChannels(client: Client, guildId: string): Promise<ChannelInfo[]> {
+export async function getTextChannels(client: Client, guildId: string): Promise<ChannelInfo[]> {
   const guild = await client.guilds.fetch(guildId);
   const channels = await guild.channels.fetch();
   const me = guild.members.me;
