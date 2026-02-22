@@ -1,8 +1,11 @@
 /**
- * Message management for the persistent schedule grid.
+ * Message management for the persistent schedule grids.
  *
  * Handles posting new messages, recovering from deleted messages,
  * and updating existing messages with fresh grid images.
+ *
+ * Two grid messages per team: next week (top) and current week (bottom).
+ * Each has its own "Edit day..." dropdown scoped to its week.
  */
 
 import {
@@ -16,6 +19,7 @@ import {
 } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
+import { getNextWeekId } from './time.js';
 import { buildDaySelectMenu } from './interactions.js';
 
 // Discord API error codes
@@ -26,15 +30,20 @@ function getDiscordErrorCode(err: unknown): number | undefined {
     return (err as { code?: number }).code;
 }
 
+/** Firestore field name for the message ID based on week type */
+function messageIdField(isNextWeek: boolean): string {
+    return isNextWeek ? 'nextWeekMessageId' : 'scheduleMessageId';
+}
+
 /**
  * Post a new message or recover the existing one.
  *
  * Flow:
- * 1. Read scheduleMessageId from botRegistrations
+ * 1. Read message ID from botRegistrations (scheduleMessageId or nextWeekMessageId)
  * 2. Try to fetch the channel → if Unknown Channel: clear config, return null
  * 3. Try to fetch the message by stored ID → if found: edit with new content
  * 4. If not found or no ID stored: post new message
- * 5. Write scheduleMessageId back to Firestore
+ * 5. Write message ID back to Firestore
  * 6. Return the message ID
  */
 export async function postOrRecoverMessage(
@@ -42,12 +51,14 @@ export async function postOrRecoverMessage(
     channelId: string,
     teamId: string,
     imageBuffer: Buffer,
+    isNextWeek = false,
 ): Promise<string | null> {
     const db = getDb();
     const regDoc = await db.collection('botRegistrations').doc(teamId).get();
     if (!regDoc.exists) return null;
 
-    const storedMessageId: string | null = regDoc.data()!.scheduleMessageId ?? null;
+    const field = messageIdField(isNextWeek);
+    const storedMessageId: string | null = regDoc.data()![field] ?? null;
 
     // Fetch channel
     let channel: TextChannel;
@@ -64,6 +75,7 @@ export async function postOrRecoverMessage(
             await db.collection('botRegistrations').doc(teamId).update({
                 scheduleChannelId: null,
                 scheduleMessageId: null,
+                nextWeekMessageId: null,
             });
         } else {
             logger.error('Failed to fetch schedule channel', {
@@ -75,7 +87,7 @@ export async function postOrRecoverMessage(
 
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'schedule.png' });
 
-    const components = buildActionRows(teamId);
+    const components = buildActionRows(teamId, isNextWeek);
     const payload = { embeds: [] as EmbedBuilder[], files: [attachment], components };
 
     // If we have a stored message ID, try to edit it
@@ -87,13 +99,13 @@ export async function postOrRecoverMessage(
         } catch (err) {
             if (getDiscordErrorCode(err) !== UNKNOWN_MESSAGE) {
                 logger.error('Failed to edit schedule message', {
-                    teamId, messageId: storedMessageId,
+                    teamId, messageId: storedMessageId, isNextWeek,
                     error: err instanceof Error ? err.message : String(err),
                 });
                 return null;
             }
             // Unknown Message (10008) — fall through to post new
-            logger.info('Stored schedule message gone, posting fresh', { teamId });
+            logger.info('Stored schedule message gone, posting fresh', { teamId, isNextWeek });
         }
     }
 
@@ -101,13 +113,13 @@ export async function postOrRecoverMessage(
     try {
         const newMessage = await channel.send(payload);
         await db.collection('botRegistrations').doc(teamId).update({
-            scheduleMessageId: newMessage.id,
+            [field]: newMessage.id,
         });
-        logger.info('Posted new schedule message', { teamId, channelId, messageId: newMessage.id });
+        logger.info('Posted new schedule message', { teamId, channelId, messageId: newMessage.id, isNextWeek });
         return newMessage.id;
     } catch (err) {
         logger.error('Failed to post schedule message', {
-            teamId, channelId, error: err instanceof Error ? err.message : String(err),
+            teamId, channelId, isNextWeek, error: err instanceof Error ? err.message : String(err),
         });
         return null;
     }
@@ -125,6 +137,7 @@ export async function updateMessage(
     messageId: string,
     teamId: string,
     imageBuffer: Buffer,
+    isNextWeek = false,
 ): Promise<string | null> {
     const db = getDb();
 
@@ -139,6 +152,7 @@ export async function updateMessage(
             await db.collection('botRegistrations').doc(teamId).update({
                 scheduleChannelId: null,
                 scheduleMessageId: null,
+                nextWeekMessageId: null,
             });
         } else {
             logger.error('Failed to fetch channel for update', {
@@ -150,7 +164,7 @@ export async function updateMessage(
 
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'schedule.png' });
 
-    const components = buildActionRows(teamId);
+    const components = buildActionRows(teamId, isNextWeek);
 
     try {
         const message = await channel.messages.fetch(messageId);
@@ -160,7 +174,7 @@ export async function updateMessage(
         const code = getDiscordErrorCode(err);
         if (code === UNKNOWN_MESSAGE) {
             // Message deleted — caller should use postOrRecoverMessage
-            logger.info('Schedule message deleted, needs recovery', { teamId, messageId });
+            logger.info('Schedule message deleted, needs recovery', { teamId, messageId, isNextWeek });
             return null;
         }
         if (code === UNKNOWN_CHANNEL) {
@@ -168,11 +182,12 @@ export async function updateMessage(
             await db.collection('botRegistrations').doc(teamId).update({
                 scheduleChannelId: null,
                 scheduleMessageId: null,
+                nextWeekMessageId: null,
             });
             return null;
         }
         logger.error('Failed to edit schedule message', {
-            teamId, messageId, error: err instanceof Error ? err.message : String(err),
+            teamId, messageId, isNextWeek, error: err instanceof Error ? err.message : String(err),
         });
         return null;
     }
@@ -256,8 +271,12 @@ export async function syncCardMessages(
 
 // ── Action rows for the persistent message ──────────────────────────────────
 
-function buildActionRows(teamId: string): Array<ActionRowBuilder<StringSelectMenuBuilder>> {
-    const daySelect = buildDaySelectMenu(`avail:editDay:${teamId}`);
+function buildActionRows(teamId: string, isNextWeek = false): Array<ActionRowBuilder<StringSelectMenuBuilder>> {
+    const customId = isNextWeek
+        ? `avail:editDay:${teamId}:next`
+        : `avail:editDay:${teamId}`;
+    const weekId = isNextWeek ? getNextWeekId() : undefined;
+    const daySelect = buildDaySelectMenu(customId, weekId);
     const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(daySelect);
     return [row];
 }

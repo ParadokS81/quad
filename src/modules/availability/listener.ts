@@ -3,12 +3,12 @@
  *
  * On startup, queries all active botRegistrations with a scheduleChannelId
  * and starts per-team listeners. Each team gets:
- * - An availability document listener (real-time, debounced re-render)
+ * - Two availability document listeners (current week + next week, debounced re-render)
  * - A registration document listener (detects channel changes, teardown)
- * - A scheduled matches poll (every 5 minutes)
+ * - A scheduled matches poll (every 5 minutes, both weeks)
  *
- * On each render: weekly rollover check, team info refresh, canvas render,
- * and Discord message post/update.
+ * On each render: weekly rollover check, team info refresh, canvas render for
+ * both weeks, and Discord message post/update.
  */
 
 import { type Client } from 'discord.js';
@@ -18,7 +18,7 @@ import {
     type AvailabilityData, type TeamInfo, type RosterMember,
     type ScheduledMatchDisplay, type ActiveProposalDisplay,
 } from './types.js';
-import { getCurrentWeekId, getWeekDates } from './time.js';
+import { getCurrentWeekId, getNextWeekId, getWeekDates } from './time.js';
 import { renderGrid } from './renderer.js';
 import {
     renderMatchCard, renderProposalCard,
@@ -33,15 +33,23 @@ import { getTeamLogo, clearLogoCache } from './logo-cache.js';
 interface TeamState {
     teamId: string;
     channelId: string;
+    // Current week
     messageId: string | null;
     weekId: string;
     availabilityUnsub: () => void;
+    lastAvailability: AvailabilityData | null;
+    scheduledMatches: ScheduledMatchDisplay[];
+    // Next week
+    nextWeekMessageId: string | null;
+    nextWeekId: string;
+    nextWeekUnsub: () => void;
+    nextWeekAvailability: AvailabilityData | null;
+    nextWeekMatches: ScheduledMatchDisplay[];
+    // Shared
     registrationUnsub: () => void;
     pollTimer: ReturnType<typeof setInterval> | null;
     debounceTimer: ReturnType<typeof setTimeout> | null;
-    lastAvailability: AvailabilityData | null;
     teamInfo: TeamInfo | null;
-    scheduledMatches: ScheduledMatchDisplay[];
     activeProposals: ActiveProposalDisplay[];
     matchMessageIds: string[];
     proposalMessageIds: string[];
@@ -70,13 +78,14 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const teamId = doc.id;
         const channelId = data.scheduleChannelId as string | null;
         const messageId = data.scheduleMessageId as string | null;
+        const nextWeekMessageId = (data.nextWeekMessageId as string | null) ?? null;
         const matchMessageIds = (data.matchMessageIds as string[] | undefined) ?? [];
         const proposalMessageIds = (data.proposalMessageIds as string[] | undefined) ?? [];
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId, matchMessageIds, proposalMessageIds);
+            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -101,11 +110,15 @@ export function stopAllListeners(): void {
 }
 
 /**
- * Get cached availability data for a team (used by interaction handlers).
+ * Get cached availability data for a team + week.
  * Returns null if team not tracked or no data yet.
  */
-export function getTeamAvailability(teamId: string): AvailabilityData | null {
-    return activeTeams.get(teamId)?.lastAvailability ?? null;
+export function getAvailabilityForWeek(teamId: string, weekId: string): AvailabilityData | null {
+    const state = activeTeams.get(teamId);
+    if (!state) return null;
+    if (weekId === state.weekId) return state.lastAvailability;
+    if (weekId === state.nextWeekId) return state.nextWeekAvailability;
+    return null;
 }
 
 // ── Per-team lifecycle ───────────────────────────────────────────────────────
@@ -114,6 +127,7 @@ export async function startTeamListener(
     teamId: string,
     channelId: string,
     storedMessageId: string | null,
+    storedNextWeekMessageId: string | null = null,
     storedMatchMessageIds: string[] = [],
     storedProposalMessageIds: string[] = [],
 ): Promise<void> {
@@ -125,19 +139,28 @@ export async function startTeamListener(
     }
 
     const weekId = getCurrentWeekId();
+    const nextWeekId = getNextWeekId();
 
     const state: TeamState = {
         teamId,
         channelId,
+        // Current week
         messageId: storedMessageId,
         weekId,
         availabilityUnsub: () => {},
+        lastAvailability: null,
+        scheduledMatches: [],
+        // Next week
+        nextWeekMessageId: storedNextWeekMessageId,
+        nextWeekId,
+        nextWeekUnsub: () => {},
+        nextWeekAvailability: null,
+        nextWeekMatches: [],
+        // Shared
         registrationUnsub: () => {},
         pollTimer: null,
         debounceTimer: null,
-        lastAvailability: null,
         teamInfo: null,
-        scheduledMatches: [],
         activeProposals: [],
         matchMessageIds: storedMatchMessageIds,
         proposalMessageIds: storedProposalMessageIds,
@@ -148,8 +171,9 @@ export async function startTeamListener(
     // Fetch initial team info before first render
     state.teamInfo = await fetchTeamInfo(teamId);
 
-    // Subscribe to availability changes
-    state.availabilityUnsub = subscribeAvailability(teamId, weekId);
+    // Subscribe to availability changes for both weeks
+    state.availabilityUnsub = subscribeAvailability(teamId, weekId, 'current');
+    state.nextWeekUnsub = subscribeAvailability(teamId, nextWeekId, 'next');
 
     // Subscribe to registration config changes
     state.registrationUnsub = subscribeRegistration(teamId);
@@ -164,7 +188,7 @@ export async function startTeamListener(
         });
     }, 5 * 60 * 1000);
 
-    logger.info('Availability listener started for team', { teamId, channelId, weekId });
+    logger.info('Availability listener started for team', { teamId, channelId, weekId, nextWeekId });
 }
 
 function teardownTeam(teamId: string): void {
@@ -172,6 +196,7 @@ function teardownTeam(teamId: string): void {
     if (!state) return;
 
     state.availabilityUnsub();
+    state.nextWeekUnsub();
     state.registrationUnsub();
     if (state.debounceTimer) clearTimeout(state.debounceTimer);
     if (state.pollTimer) clearInterval(state.pollTimer);
@@ -182,7 +207,7 @@ function teardownTeam(teamId: string): void {
 
 // ── Firestore subscriptions ─────────────────────────────────────────────────
 
-function subscribeAvailability(teamId: string, weekId: string): () => void {
+function subscribeAvailability(teamId: string, weekId: string, which: 'current' | 'next'): () => void {
     if (!firestoreDb) return () => {};
 
     const docId = `${teamId}_${weekId}`;
@@ -192,16 +217,17 @@ function subscribeAvailability(teamId: string, weekId: string): () => void {
                 const state = activeTeams.get(teamId);
                 if (!state) return;
 
-                if (snap.exists) {
-                    state.lastAvailability = snap.data() as AvailabilityData;
+                const data = snap.exists ? snap.data() as AvailabilityData : null;
+                if (which === 'current') {
+                    state.lastAvailability = data;
                 } else {
-                    state.lastAvailability = null;
+                    state.nextWeekAvailability = data;
                 }
                 scheduleRender(teamId);
             },
             (err) => {
                 logger.error('Availability listener error', {
-                    teamId, weekId, error: err instanceof Error ? err.message : String(err),
+                    teamId, weekId, which, error: err instanceof Error ? err.message : String(err),
                 });
             },
         );
@@ -236,7 +262,7 @@ function subscribeRegistration(teamId: string): () => void {
                 // Channel changed — restart with new channel
                 if (newChannelId !== currentState.channelId) {
                     teardownTeam(teamId);
-                    startTeamListener(teamId, newChannelId, null).catch(err => {
+                    startTeamListener(teamId, newChannelId, null, null).catch(err => {
                         logger.error('Failed to restart listener after channel change', {
                             teamId, error: err instanceof Error ? err.message : String(err),
                         });
@@ -273,17 +299,37 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
 
     // Weekly rollover check
     const currentWeekId = getCurrentWeekId();
+    const nextWeekId = getNextWeekId();
+
     if (currentWeekId !== state.weekId) {
-        logger.info('Week rollover detected', { teamId, oldWeek: state.weekId, newWeek: currentWeekId });
+        logger.info('Week rollover detected', {
+            teamId, oldWeek: state.weekId, newWeek: currentWeekId,
+        });
+        // Current week rolled — resubscribe both
         state.availabilityUnsub();
+        state.nextWeekUnsub();
         state.weekId = currentWeekId;
+        state.nextWeekId = nextWeekId;
         state.lastAvailability = null;
-        state.availabilityUnsub = subscribeAvailability(teamId, currentWeekId);
-        // New snapshot will trigger another render
+        state.nextWeekAvailability = null;
+        // Old next-week message becomes irrelevant (old current week grid)
+        // — it will be updated with the new next-week data on next render
+        state.availabilityUnsub = subscribeAvailability(teamId, currentWeekId, 'current');
+        state.nextWeekUnsub = subscribeAvailability(teamId, nextWeekId, 'next');
+        // New snapshots will trigger another render
         return;
     }
 
-    // Refresh team info (team data changes rarely, but refresh each render to stay current)
+    // Next week ID might change without current week rolling (edge case at year boundary)
+    if (nextWeekId !== state.nextWeekId) {
+        state.nextWeekUnsub();
+        state.nextWeekId = nextWeekId;
+        state.nextWeekAvailability = null;
+        state.nextWeekUnsub = subscribeAvailability(teamId, nextWeekId, 'next');
+        return;
+    }
+
+    // Refresh team info
     const freshTeamInfo = await fetchTeamInfo(teamId);
     if (freshTeamInfo) {
         state.teamInfo = freshTeamInfo;
@@ -295,15 +341,34 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
     }
 
     const now = new Date();
-    const weekDates = getWeekDates(state.weekId);
 
-    // Render canvas grid
-    let imageBuffer: Buffer;
+    // ── Render next week grid ──
+    let nextWeekBuffer: Buffer;
     try {
-        imageBuffer = await renderGrid({
+        nextWeekBuffer = await renderGrid({
+            teamTag: state.teamInfo.teamTag,
+            weekId: state.nextWeekId,
+            weekDates: getWeekDates(state.nextWeekId),
+            slots: state.nextWeekAvailability?.slots ?? {},
+            unavailable: state.nextWeekAvailability?.unavailable,
+            roster: state.teamInfo.roster,
+            scheduledMatches: state.nextWeekMatches,
+            now,
+        });
+    } catch (err) {
+        logger.error('Failed to render next week grid', {
+            teamId, error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+    }
+
+    // ── Render current week grid ──
+    let currentWeekBuffer: Buffer;
+    try {
+        currentWeekBuffer = await renderGrid({
             teamTag: state.teamInfo.teamTag,
             weekId: state.weekId,
-            weekDates,
+            weekDates: getWeekDates(state.weekId),
             slots: state.lastAvailability?.slots ?? {},
             unavailable: state.lastAvailability?.unavailable,
             roster: state.teamInfo.roster,
@@ -311,56 +376,113 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             now,
         });
     } catch (err) {
-        logger.error('Failed to render schedule grid', {
+        logger.error('Failed to render current week grid', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
         return;
     }
 
-    // Post or update the grid message (image + dropdown only)
+    // ── Post/update next week grid message (must be above current week) ──
+    let nextWeekReposted = false;
     try {
-        if (state.messageId) {
+        if (state.nextWeekMessageId) {
             const result = await updateMessage(
-                botClient, state.channelId, state.messageId, teamId, imageBuffer,
+                botClient, state.channelId, state.nextWeekMessageId, teamId, nextWeekBuffer, true,
             );
             if (result === null) {
                 const newId = await postOrRecoverMessage(
-                    botClient, state.channelId, teamId, imageBuffer,
+                    botClient, state.channelId, teamId, nextWeekBuffer, true,
                 );
-                state.messageId = newId;
-                // Grid was re-posted — old card messages are now above it, delete them
-                await deleteCardMessages(botClient, state.channelId, state.matchMessageIds);
-                await deleteCardMessages(botClient, state.channelId, state.proposalMessageIds);
-                state.matchMessageIds = [];
-                state.proposalMessageIds = [];
-                await firestoreDb!.collection('botRegistrations').doc(teamId).update({
-                    matchMessageIds: [],
-                    proposalMessageIds: [],
-                });
+                state.nextWeekMessageId = newId;
+                nextWeekReposted = true;
             }
         } else {
             const newId = await postOrRecoverMessage(
-                botClient, state.channelId, teamId, imageBuffer,
+                botClient, state.channelId, teamId, nextWeekBuffer, true,
             );
-            state.messageId = newId;
+            state.nextWeekMessageId = newId;
+            nextWeekReposted = true;
         }
     } catch (err) {
-        logger.error('Failed to update schedule message', {
+        logger.error('Failed to update next week message', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
 
-    // ── Render match + proposal card messages ──
-    // Each card = its own Discord message (image + link button).
-    // If the count of either category changed, wipe ALL card messages and
-    // repost in order (matches first, then proposals) to keep correct ordering.
+    // If next week grid was reposted, current week grid + cards are now above it — repost all
+    if (nextWeekReposted) {
+        // Delete existing current week message + all cards
+        await deleteMessages(botClient, state.channelId, [
+            ...(state.messageId ? [state.messageId] : []),
+            ...state.matchMessageIds,
+            ...state.proposalMessageIds,
+        ]);
+        state.messageId = null;
+        state.matchMessageIds = [];
+        state.proposalMessageIds = [];
+    }
+
+    // ── Post/update current week grid message ──
+    let currentWeekReposted = false;
     try {
+        if (state.messageId) {
+            const result = await updateMessage(
+                botClient, state.channelId, state.messageId, teamId, currentWeekBuffer, false,
+            );
+            if (result === null) {
+                const newId = await postOrRecoverMessage(
+                    botClient, state.channelId, teamId, currentWeekBuffer, false,
+                );
+                state.messageId = newId;
+                currentWeekReposted = true;
+            }
+        } else {
+            const newId = await postOrRecoverMessage(
+                botClient, state.channelId, teamId, currentWeekBuffer, false,
+            );
+            state.messageId = newId;
+            currentWeekReposted = true;
+        }
+    } catch (err) {
+        logger.error('Failed to update current week message', {
+            teamId, error: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    // If current week grid was reposted, cards are now above it — delete them
+    if (currentWeekReposted && !nextWeekReposted) {
+        await deleteMessages(botClient, state.channelId, [
+            ...state.matchMessageIds,
+            ...state.proposalMessageIds,
+        ]);
+        state.matchMessageIds = [];
+        state.proposalMessageIds = [];
+        await firestoreDb.collection('botRegistrations').doc(teamId).update({
+            matchMessageIds: [],
+            proposalMessageIds: [],
+        });
+    }
+
+    // Persist message IDs if either grid was reposted
+    if (nextWeekReposted || currentWeekReposted) {
+        await firestoreDb.collection('botRegistrations').doc(teamId).update({
+            nextWeekMessageId: state.nextWeekMessageId,
+            scheduleMessageId: state.messageId,
+            matchMessageIds: state.matchMessageIds,
+            proposalMessageIds: state.proposalMessageIds,
+        });
+    }
+
+    // ── Render match + proposal card messages ──
+    // Combine both weeks' matches, sorted chronologically.
+    try {
+        const allMatches = [...state.scheduledMatches, ...state.nextWeekMatches];
         const matchCards: Array<{ buffer: Buffer; button: ReturnType<typeof buildMatchButton> }> = [];
         const proposalCards: Array<{ buffer: Buffer; button: ReturnType<typeof buildProposalButton> }> = [];
 
-        if (state.scheduledMatches.length > 0 && state.teamInfo) {
+        if (allMatches.length > 0 && state.teamInfo) {
             const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
-            for (const match of state.scheduledMatches) {
+            for (const match of allMatches) {
                 const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
                 matchCards.push({
                     buffer: await renderMatchCard({
@@ -401,8 +523,8 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
 
         if (countsChanged) {
             // Delete all existing card messages
-            await deleteCardMessages(botClient, state.channelId, state.matchMessageIds);
-            await deleteCardMessages(botClient, state.channelId, state.proposalMessageIds);
+            await deleteMessages(botClient, state.channelId, state.matchMessageIds);
+            await deleteMessages(botClient, state.channelId, state.proposalMessageIds);
 
             // Post fresh: matches first, then proposals (correct channel order)
             const newMatchIds = await syncCardMessages(
@@ -494,45 +616,62 @@ async function fetchTeamInfo(teamId: string): Promise<TeamInfo | null> {
 /**
  * Poll scheduled matches and active proposals for a team.
  * Fetches enriched data including gameType, names, and opponent logo URLs.
+ * Queries both current and next week.
  */
 async function pollScheduledMatches(teamId: string): Promise<void> {
     const state = activeTeams.get(teamId);
     if (!state || !firestoreDb) return;
 
     try {
-        // Scheduled matches for this team's current week
-        const matchesSnap = await firestoreDb.collection('scheduledMatches')
-            .where('blockedTeams', 'array-contains', teamId)
-            .where('status', '==', 'upcoming')
-            .where('weekId', '==', state.weekId)
-            .get();
+        // Scheduled matches for both weeks
+        const [currentMatchesSnap, nextMatchesSnap] = await Promise.all([
+            firestoreDb.collection('scheduledMatches')
+                .where('blockedTeams', 'array-contains', teamId)
+                .where('status', '==', 'upcoming')
+                .where('weekId', '==', state.weekId)
+                .get(),
+            firestoreDb.collection('scheduledMatches')
+                .where('blockedTeams', 'array-contains', teamId)
+                .where('status', '==', 'upcoming')
+                .where('weekId', '==', state.nextWeekId)
+                .get(),
+        ]);
 
-        const prevMatchCount = state.scheduledMatches.length;
+        const prevMatchCount = state.scheduledMatches.length + state.nextWeekMatches.length;
         const prevProposalCount = state.activeProposals.length;
 
         // Collect opponent teamIds for logo fetching
         const opponentTeamIds = new Set<string>();
 
-        // Build enriched match list
-        const scheduledMatches: ScheduledMatchDisplay[] = [];
-        for (const doc of matchesSnap.docs) {
-            const data = doc.data();
-            const isTeamA = data.teamAId === teamId;
-            const opponentId = isTeamA ? String(data.teamBId ?? '') : String(data.teamAId ?? '');
-            if (opponentId) opponentTeamIds.add(opponentId);
+        // Build enriched match lists
+        function buildMatchList(
+            snap: FirebaseFirestore.QuerySnapshot,
+            weekId: string,
+        ): ScheduledMatchDisplay[] {
+            const matches: ScheduledMatchDisplay[] = [];
+            for (const doc of snap.docs) {
+                const data = doc.data();
+                const isTeamA = data.teamAId === teamId;
+                const opponentId = isTeamA ? String(data.teamBId ?? '') : String(data.teamAId ?? '');
+                if (opponentId) opponentTeamIds.add(opponentId);
 
-            if (data.slotId) {
-                scheduledMatches.push({
-                    slotId: String(data.slotId),
-                    opponentTag: isTeamA ? String(data.teamBTag ?? '?') : String(data.teamATag ?? '?'),
-                    opponentId,
-                    opponentName: isTeamA ? String(data.teamBName ?? '') : String(data.teamAName ?? ''),
-                    gameType: (data.gameType as 'official' | 'practice') ?? 'practice',
-                    opponentLogoUrl: null, // filled below after logo fetch
-                    scheduledDate: formatScheduledDate(String(data.slotId), state.weekId),
-                });
+                if (data.slotId) {
+                    matches.push({
+                        slotId: String(data.slotId),
+                        opponentTag: isTeamA ? String(data.teamBTag ?? '?') : String(data.teamATag ?? '?'),
+                        opponentId,
+                        opponentName: isTeamA ? String(data.teamBName ?? '') : String(data.teamAName ?? ''),
+                        gameType: (data.gameType as 'official' | 'practice') ?? 'practice',
+                        opponentLogoUrl: null,
+                        scheduledDate: formatScheduledDate(String(data.slotId), weekId),
+                    });
+                }
             }
+            return matches;
         }
+
+        const scheduledMatches = buildMatchList(currentMatchesSnap, state.weekId);
+        const nextWeekMatches = buildMatchList(nextMatchesSnap, state.nextWeekId);
 
         // Active proposals (Firestore doesn't support OR across fields, two queries)
         const [proposerSnap, opponentSnap] = await Promise.all([
@@ -568,7 +707,7 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
                         ? String(data.opponentTeamName ?? '')
                         : String(data.proposerTeamName ?? ''),
                     viableSlots: Array.isArray(data.confirmedSlots) ? data.confirmedSlots.length : 0,
-                    opponentLogoUrl: null, // filled below
+                    opponentLogoUrl: null,
                 });
             }
         }
@@ -585,18 +724,19 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
                 }
             }
 
-            // Fill logo URLs on matches
-            for (const m of scheduledMatches) {
+            // Fill logo URLs on matches (both weeks)
+            for (const m of [...scheduledMatches, ...nextWeekMatches]) {
                 m.opponentLogoUrl = logoUrls.get(m.opponentId) ?? null;
             }
 
-            // Fill logo URLs on proposals (match by tag → id mapping)
-            // We need to map opponent tags to their teamIds for proposals
+            // Fill logo URLs on proposals
             const tagToId = new Map<string, string>();
-            for (const doc of matchesSnap.docs) {
-                const d = doc.data();
-                if (d.teamAId !== teamId) tagToId.set(String(d.teamATag ?? ''), String(d.teamAId));
-                if (d.teamBId !== teamId) tagToId.set(String(d.teamBTag ?? ''), String(d.teamBId));
+            for (const snap of [currentMatchesSnap, nextMatchesSnap]) {
+                for (const doc of snap.docs) {
+                    const d = doc.data();
+                    if (d.teamAId !== teamId) tagToId.set(String(d.teamATag ?? ''), String(d.teamAId));
+                    if (d.teamBId !== teamId) tagToId.set(String(d.teamBTag ?? ''), String(d.teamBId));
+                }
             }
             for (const snap of [proposerSnap, opponentSnap]) {
                 for (const doc of snap.docs) {
@@ -615,18 +755,24 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
 
         // Sort matches chronologically
         const dayOrder: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
-        scheduledMatches.sort((a, b) => {
-            const [dayA, timeA = ''] = a.slotId.split('_');
-            const [dayB, timeB = ''] = b.slotId.split('_');
-            const dayCmp = (dayOrder[dayA] ?? 9) - (dayOrder[dayB] ?? 9);
-            return dayCmp !== 0 ? dayCmp : timeA.localeCompare(timeB);
-        });
+        const sortMatches = (list: ScheduledMatchDisplay[]) => {
+            list.sort((a, b) => {
+                const [dayA, timeA = ''] = a.slotId.split('_');
+                const [dayB, timeB = ''] = b.slotId.split('_');
+                const dayCmp = (dayOrder[dayA] ?? 9) - (dayOrder[dayB] ?? 9);
+                return dayCmp !== 0 ? dayCmp : timeA.localeCompare(timeB);
+            });
+        };
+        sortMatches(scheduledMatches);
+        sortMatches(nextWeekMatches);
 
         state.scheduledMatches = scheduledMatches;
+        state.nextWeekMatches = nextWeekMatches;
         state.activeProposals = activeProposals;
 
         // Trigger re-render if matches or proposals changed
-        if (scheduledMatches.length !== prevMatchCount || activeProposals.length !== prevProposalCount) {
+        const newMatchCount = scheduledMatches.length + nextWeekMatches.length;
+        if (newMatchCount !== prevMatchCount || activeProposals.length !== prevProposalCount) {
             scheduleRender(teamId);
         }
     } catch (err) {
@@ -643,7 +789,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 /** Delete an array of Discord messages (best-effort, ignores failures). */
-async function deleteCardMessages(client: Client, channelId: string, messageIds: string[]): Promise<void> {
+async function deleteMessages(client: Client, channelId: string, messageIds: string[]): Promise<void> {
     if (messageIds.length === 0) return;
     try {
         const fetched = await client.channels.fetch(channelId);

@@ -67,8 +67,16 @@ export function formatSlotCET(utcSlotId: string): string {
 
 /** Get current ISO week ID. Returns "YYYY-WW" e.g. "2026-08" */
 export function getCurrentWeekId(): string {
-    const now = new Date();
-    // Use Thursday of the current week to determine the ISO year + week
+    return getIsoWeekId(new Date());
+}
+
+/** Get next ISO week ID. Returns "YYYY-WW" for the week after the current one. */
+export function getNextWeekId(): string {
+    return getIsoWeekId(new Date(Date.now() + 7 * 86400000));
+}
+
+/** Compute ISO 8601 week ID for any date. */
+function getIsoWeekId(now: Date): string {
     const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
     const dayNum = d.getUTCDay() || 7; // Treat Sunday as 7
     d.setUTCDate(d.getUTCDate() + 4 - dayNum); // Move to Thursday

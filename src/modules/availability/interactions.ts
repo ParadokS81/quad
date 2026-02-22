@@ -2,8 +2,9 @@
  * Interaction handlers for the persistent schedule message.
  *
  * Handles:
- * - avail:editDay:{teamId}      — Day select menu on persistent message
- * - avail:editSlots:{teamId}:{cetDay} — Time slot multi-select on ephemeral
+ * - avail:editDay:{teamId}            — Day select on current week grid
+ * - avail:editDay:{teamId}:next       — Day select on next week grid
+ * - avail:editSlots:{teamId}:{cetDay}:{weekId} — Time slot multi-select on ephemeral
  */
 
 import {
@@ -19,6 +20,7 @@ import { getDb } from '../standin/firestore.js';
 import { resolveUser } from './user-resolver.js';
 import {
     getCurrentWeekId,
+    getNextWeekId,
     getWeekDates,
     cetToUtcSlotId,
     isDayPast,
@@ -26,7 +28,7 @@ import {
     formatCetTime,
     CET_SLOT_TIMES,
 } from './time.js';
-import { getTeamAvailability } from './listener.js';
+import { getAvailabilityForWeek } from './listener.js';
 
 const DAY_NAMES: Record<string, string> = {
     mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday',
@@ -76,16 +78,24 @@ export async function handleSelectMenu(interaction: StringSelectMenuInteraction)
 /**
  * Step 1: User selects a day from the persistent message or "edit another" menu.
  * Shows an ephemeral with time slot checkboxes, current slots pre-checked.
+ *
+ * CustomId format:
+ * - avail:editDay:{teamId}       — current week
+ * - avail:editDay:{teamId}:next  — next week
  */
 async function handleDaySelect(interaction: StringSelectMenuInteraction): Promise<void> {
-    const teamId = extractTeamId(interaction.customId);
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+    const isNextWeek = parts[3] === 'next';
     const cetDay = interaction.values[0];
 
     const user = await resolveUser(interaction.user.id, teamId);
     if (!user) return replyNotLinked(interaction, teamId);
 
-    const weekId = getCurrentWeekId();
-    if (isDayPast(cetDay, weekId)) {
+    const weekId = isNextWeek ? getNextWeekId() : getCurrentWeekId();
+
+    // Only check past for current week (next week is always fully available)
+    if (!isNextWeek && isDayPast(cetDay, weekId)) {
         await interaction.reply({
             content: 'This day has already passed.',
             flags: MessageFlags.Ephemeral,
@@ -93,11 +103,11 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
         return;
     }
 
-    const currentSlots = getCurrentUserSlots(teamId, user.uid, cetDay);
+    const currentSlots = getUserSlotsForWeek(teamId, user.uid, cetDay, weekId);
 
-    // Filter out past time slots for today, show all for future days
+    // Filter out past time slots for current week's today, show all otherwise
     const options = CET_SLOT_TIMES
-        .filter(time => !isSlotPast(cetToUtcSlotId(cetDay, time), weekId))
+        .filter(time => isNextWeek || !isSlotPast(cetToUtcSlotId(cetDay, time), weekId))
         .map(time => ({
             label: `${formatCetTime(time)} CET`,
             value: time,
@@ -113,16 +123,17 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
     }
 
     const select = new StringSelectMenuBuilder()
-        .setCustomId(`avail:editSlots:${teamId}:${cetDay}`)
+        .setCustomId(`avail:editSlots:${teamId}:${cetDay}:${weekId}`)
         .setPlaceholder('Select times...')
         .setMinValues(0)
         .setMaxValues(options.length)
         .addOptions(options);
 
     const dayLabel = formatDayLabel(cetDay, weekId);
+    const weekLabel = isNextWeek ? ' (next week)' : '';
 
     await interaction.reply({
-        content: `**${dayLabel}**\nSelect which times you're available:`,
+        content: `**${dayLabel}${weekLabel}**\nSelect which times you're available:`,
         components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
         flags: MessageFlags.Ephemeral,
     });
@@ -131,17 +142,20 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
 /**
  * Step 2: User submits time slot selections. Diffs against current state,
  * writes to Firestore, and shows confirmation with "edit another day" option.
+ *
+ * CustomId: avail:editSlots:{teamId}:{cetDay}:{weekId}
  */
 async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promise<void> {
     const parts = interaction.customId.split(':');
     const teamId = parts[2];
     const cetDay = parts[3];
+    const weekId = parts[4] ?? getCurrentWeekId();
 
     const user = await resolveUser(interaction.user.id, teamId);
     if (!user) return replyNotLinked(interaction, teamId);
 
     const selectedCetTimes = interaction.values;
-    const currentSlots = getCurrentUserSlots(teamId, user.uid, cetDay);
+    const currentSlots = getUserSlotsForWeek(teamId, user.uid, cetDay, weekId);
 
     const toAdd = selectedCetTimes.filter(t => !currentSlots.includes(t));
     const toRemove = currentSlots.filter(t => !selectedCetTimes.includes(t));
@@ -152,7 +166,6 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
         return;
     }
 
-    const weekId = getCurrentWeekId();
     const docId = `${teamId}_${weekId}`;
     const updateData: Record<string, any> = {
         lastUpdated: FieldValue.serverTimestamp(),
@@ -200,19 +213,21 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
     }, 5000);
 
     logger.info('Availability updated via Discord', {
-        teamId, userId: user.uid, cetDay, added: toAdd.length, removed: toRemove.length,
+        teamId, userId: user.uid, cetDay, weekId, added: toAdd.length, removed: toRemove.length,
     });
 }
 
 // ── Clear Week Flow ─────────────────────────────────────────────────────────
 
 async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
-    const teamId = extractTeamId(interaction.customId);
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+    const isNextWeek = parts[3] === 'next';
 
     const user = await resolveUser(interaction.user.id, teamId);
     if (!user) return replyNotLinked(interaction, teamId);
 
-    const weekId = getCurrentWeekId();
+    const weekId = isNextWeek ? getNextWeekId() : getCurrentWeekId();
     const docId = `${teamId}_${weekId}`;
     const db = getDb();
     const docRef = db.collection('availability').doc(docId);
@@ -220,7 +235,7 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
 
     if (!doc.exists) {
         await interaction.reply({
-            content: 'You have no availability set this week.',
+            content: `You have no availability set for ${isNextWeek ? 'next' : 'this'} week.`,
             flags: MessageFlags.Ephemeral,
         });
         return;
@@ -244,7 +259,7 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
 
     if (Object.keys(updateData).length <= 1) {
         await interaction.reply({
-            content: 'You have no availability set this week.',
+            content: `You have no availability set for ${isNextWeek ? 'next' : 'this'} week.`,
             flags: MessageFlags.Ephemeral,
         });
         return;
@@ -281,11 +296,11 @@ function extractTeamId(customId: string): string {
 }
 
 /**
- * Get current CET time slots the user is available for on a given day.
+ * Get CET time slots the user is available for on a given day+week.
  * Reads from the cached listener state — no extra Firestore read.
  */
-function getCurrentUserSlots(teamId: string, uid: string, cetDay: string): string[] {
-    const availability = getTeamAvailability(teamId);
+function getUserSlotsForWeek(teamId: string, uid: string, cetDay: string, weekId: string): string[] {
+    const availability = getAvailabilityForWeek(teamId, weekId);
     if (!availability) return [];
 
     return CET_SLOT_TIMES.filter(cetTime => {
@@ -309,13 +324,17 @@ function formatDayLabel(cetDay: string, weekId: string): string {
 /**
  * Build the day select menu for editing availability.
  * Used on both the persistent message and the "edit another day" ephemeral.
+ *
+ * @param customId — includes team and optionally ":next" suffix
+ * @param weekId — which week to show days for (defaults to current)
  */
-export function buildDaySelectMenu(customId: string): StringSelectMenuBuilder {
-    const weekId = getCurrentWeekId();
-    const weekDates = getWeekDates(weekId);
+export function buildDaySelectMenu(customId: string, weekId?: string): StringSelectMenuBuilder {
+    const wId = weekId ?? getCurrentWeekId();
+    const weekDates = getWeekDates(wId);
+    const isNextWeek = weekId !== undefined && weekId !== getCurrentWeekId();
 
     const options = weekDates
-        .filter(({ day }) => !isDayPast(day, weekId))
+        .filter(({ day }) => isNextWeek || !isDayPast(day, wId))
         .map(({ day, date }) => {
             const label = `${capitalize(day)} ${date}${getOrdinal(date)}`;
             return { label, value: day };
@@ -328,7 +347,7 @@ export function buildDaySelectMenu(customId: string): StringSelectMenuBuilder {
 
     return new StringSelectMenuBuilder()
         .setCustomId(customId)
-        .setPlaceholder('Edit day...')
+        .setPlaceholder(isNextWeek ? 'Edit day (next week)...' : 'Edit day...')
         .setMinValues(1)
         .setMaxValues(1)
         .addOptions(options);
