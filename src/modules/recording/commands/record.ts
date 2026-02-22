@@ -161,6 +161,7 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
     { flag: PermissionFlagsBits.ViewChannel, name: 'View Channel' },
     { flag: PermissionFlagsBits.Connect, name: 'Connect' },
     { flag: PermissionFlagsBits.Speak, name: 'Speak' },
+    { flag: PermissionFlagsBits.MoveMembers, name: 'Move Members' },
   ];
 
   const lines = required.map(({ flag, name }) => {
@@ -176,7 +177,7 @@ function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMembe
       '',
       ...lines,
       '',
-      'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable all three.',
+      'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable all four.',
     ].join('\n');
   }
 
@@ -422,30 +423,33 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     // Clean up empty session directory from failed attempt
     await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
 
-    // Ensure bot actually leaves the voice channel at the gateway level.
-    // connection.destroy() in joinWithRetry may not send a gateway disconnect
+    // Ensure bot actually leaves the voice channel.
+    // connection.destroy() in joinWithRetry may not send a clean disconnect
     // if the DAVE handshake never completed, leaving the bot visually stuck.
-    // Use raw gateway opcode 4 — me.voice.disconnect() is unreliable here.
+    // REST API disconnect (requires Move Members) is the most reliable method.
     try {
-      const guild = interaction.guild;
-      if (guild?.members.me?.voice.channelId) {
-        guild.shard.send({
-          op: 4,
-          d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
-        });
-        logger.info('Sent gateway disconnect after join failure', { guildId });
+      const me = interaction.guild?.members.me;
+      if (me?.voice.channelId) {
+        await me.voice.disconnect();
+        logger.info('REST disconnect after join failure', { guildId });
       }
-    } catch { /* best effort */ }
+    } catch (err) {
+      logger.warn('REST disconnect failed after join failure', {
+        guildId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     await interaction.editReply({
       content: [
-        'Failed to join voice channel after 3 attempts. Make sure the bot has all three permissions on this channel:',
+        'Failed to join voice channel after 3 attempts. Make sure the bot has all four permissions on this channel:',
         '',
         '  •  **View Channel**',
         '  •  **Connect**',
         '  •  **Speak**',
+        '  •  **Move Members**',
         '',
-        'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable all three.',
+        'To fix: right-click the voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable all four.',
         '',
         'If permissions look correct, check for channel-level overrides that might be blocking the bot\'s role.',
       ].join('\n'),
@@ -591,6 +595,9 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  // Defer immediately — REST disconnect and stopRecording can take time
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const actions: string[] = [];
 
   // 1. Stop any active recording for this guild
@@ -613,48 +620,26 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
     actions.push('Destroyed voice connection');
   }
 
-  // 4. Force-disconnect via REST API — more reliable than gateway opcode 4
-  //    guild.members.me.voice.disconnect() calls PATCH /guilds/{id}/members/@me
-  //    which forces the disconnect server-side. Gateway opcode 4 was being ignored.
+  // 4. Force-disconnect via REST API (requires Move Members permission).
+  //    Gateway opcode 4 doesn't reliably disconnect during stuck DAVE handshakes.
   const guild = interaction.guild;
   const me = guild?.members.me;
   if (me?.voice.channelId) {
     const channelName = me.voice.channel?.name;
     try {
       await me.voice.disconnect();
-      actions.push(`REST disconnect from voice channel "${channelName}"`);
+      actions.push(`Disconnected from voice channel "${channelName}"`);
     } catch (err) {
-      // Fallback to raw gateway opcode 4
-      try {
-        guild!.shard.send({
-          op: 4,
-          d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
-        });
-        actions.push(`Gateway disconnect from "${channelName}" (REST failed: ${err instanceof Error ? err.message : String(err)})`);
-      } catch {
-        actions.push('All disconnect methods failed');
-      }
-    }
-  } else if (guild) {
-    // Cache says not in voice, but send opcode 4 anyway just in case
-    try {
-      guild.shard.send({
-        op: 4,
-        d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
-      });
-      actions.push('Gateway disconnect sent (force — not in voice cache)');
-    } catch {
-      actions.push('Gateway disconnect failed');
+      actions.push(`Disconnect failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   if (actions.length === 0) {
-    await interaction.reply({ content: 'Nothing to reset — no active recording, no voice connection.', flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: 'Nothing to reset — no active recording, no voice connection.' });
   } else {
     logger.info('Manual reset performed', { guildId, actions });
-    await interaction.reply({
+    await interaction.editReply({
       content: `**Reset complete:**\n${actions.map(a => `- ${a}`).join('\n')}`,
-      flags: MessageFlags.Ephemeral,
     });
   }
 }

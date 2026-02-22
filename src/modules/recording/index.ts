@@ -94,21 +94,17 @@ export const recordingModule: BotModule = {
         try { existingConn.destroy(); } catch { /* */ }
       }
       // If the bot is visually in a voice channel with no active recording,
-      // force-disconnect via a raw gateway voice state update (opcode 4).
-      // guild.members.me.voice.disconnect() doesn't reliably work right after
-      // a restart because the voice state may not be fully hydrated yet.
+      // force-disconnect via REST API (requires Move Members permission).
+      // Gateway opcode 4 doesn't reliably disconnect during stuck DAVE handshakes.
       if (guild.members.me?.voice.channelId) {
         const channelName = guild.members.me.voice.channel?.name;
         logger.info('Force-disconnecting from stale voice channel on startup', {
           guild: guild.name, channel: channelName,
         });
         try {
-          guild.shard.send({
-            op: 4,
-            d: { guild_id: guild.id, channel_id: null, self_mute: false, self_deaf: false },
-          });
+          await guild.members.me.voice.disconnect();
         } catch (err) {
-          logger.warn('Failed to send gateway voice disconnect', {
+          logger.warn('REST disconnect failed on startup — bot may remain in voice until Discord clears it', {
             guild: guild.name, error: err instanceof Error ? err.message : String(err),
           });
         }

@@ -192,10 +192,11 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
         const perms = ch!.permissionsFor(me);
         return perms.has(PermissionFlagsBits.ViewChannel)
           && perms.has(PermissionFlagsBits.Connect)
-          && perms.has(PermissionFlagsBits.Speak);
+          && perms.has(PermissionFlagsBits.Speak)
+          && perms.has(PermissionFlagsBits.MoveMembers);
       });
       if (!canJoinAny && voiceChannels.size > 0) {
-        voiceWarning = '\n\n⚠️ **Warning:** The bot cannot connect to any voice channel. Recording will fail until permissions are fixed.\nGo to a voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel**, **Connect**, and **Speak**.';
+        voiceWarning = '\n\n⚠️ **Warning:** The bot is missing permissions on voice channels. Recording may fail.\nGo to a voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel**, **Connect**, **Speak**, and **Move Members**.';
       } else if (voiceChannels.size === 0) {
         voiceWarning = '\n\n⚠️ **Warning:** No voice channels found in this server.';
       }
