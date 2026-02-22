@@ -606,32 +606,46 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
     actions.push('Cleared joining lock');
   }
 
-  // 3. Force-disconnect from voice at gateway level (raw opcode 4)
-  //    ALWAYS send this — after a restart the local cache may be empty
-  //    (guild.members.me.voice.channelId is null) even though Discord still
-  //    thinks the bot is in a voice channel. Sending opcode 4 with channel_id: null
-  //    is harmless if the bot isn't actually in voice.
+  // 3. Destroy any @discordjs/voice connection state
+  const vc = getVoiceConnection(guildId);
+  if (vc) {
+    try { vc.destroy(); } catch { /* */ }
+    actions.push('Destroyed voice connection');
+  }
+
+  // 4. Force-disconnect via REST API — more reliable than gateway opcode 4
+  //    guild.members.me.voice.disconnect() calls PATCH /guilds/{id}/members/@me
+  //    which forces the disconnect server-side. Gateway opcode 4 was being ignored.
   const guild = interaction.guild;
-  if (guild) {
-    const channelName = guild.members.me?.voice.channel?.name;
+  const me = guild?.members.me;
+  if (me?.voice.channelId) {
+    const channelName = me.voice.channel?.name;
+    try {
+      await me.voice.disconnect();
+      actions.push(`REST disconnect from voice channel "${channelName}"`);
+    } catch (err) {
+      // Fallback to raw gateway opcode 4
+      try {
+        guild!.shard.send({
+          op: 4,
+          d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
+        });
+        actions.push(`Gateway disconnect from "${channelName}" (REST failed: ${err instanceof Error ? err.message : String(err)})`);
+      } catch {
+        actions.push('All disconnect methods failed');
+      }
+    }
+  } else if (guild) {
+    // Cache says not in voice, but send opcode 4 anyway just in case
     try {
       guild.shard.send({
         op: 4,
         d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
       });
-      actions.push(channelName
-        ? `Gateway disconnect from voice channel "${channelName}"`
-        : 'Gateway disconnect sent (force)');
+      actions.push('Gateway disconnect sent (force — not in voice cache)');
     } catch {
       actions.push('Gateway disconnect failed');
     }
-  }
-
-  // 4. Destroy any @discordjs/voice connection state (after gateway disconnect)
-  const vc = getVoiceConnection(guildId);
-  if (vc) {
-    try { vc.destroy(); } catch { /* */ }
-    actions.push('Destroyed voice connection');
   }
 
   if (actions.length === 0) {
