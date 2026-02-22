@@ -279,10 +279,25 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
   // Guard: already recording or joining in THIS guild
   if (activeSessions.has(interaction.guildId)) {
+    const existing = activeSessions.get(interaction.guildId)!;
+    logger.warn('Record start blocked — already recording', {
+      guildId: interaction.guildId,
+      guildName: interaction.guild.name,
+      existingSessionId: existing.sessionId,
+      existingChannel: existing.channelId,
+      allActiveGuilds: [...activeSessions.keys()],
+      user: interaction.user.tag,
+    });
     await interaction.reply({ content: 'Already recording in this server.', flags: MessageFlags.Ephemeral });
     return;
   }
   if (joiningGuilds.has(interaction.guildId)) {
+    logger.warn('Record start blocked — already joining', {
+      guildId: interaction.guildId,
+      guildName: interaction.guild.name,
+      allJoiningGuilds: [...joiningGuilds],
+      user: interaction.user.tag,
+    });
     await interaction.reply({ content: 'Already connecting — please wait.', flags: MessageFlags.Ephemeral });
     return;
   }
@@ -467,12 +482,17 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
     return;
   }
 
-  const sessionId = activeSessions.get(guildId)!.sessionId;
+  const session = activeSessions.get(guildId)!;
+  const sessionId = session.sessionId;
 
   logger.info('Recording stop requested', {
     user: interaction.user.tag,
-    guild: guildId,
+    guildId,
+    guildName: interaction.guild?.name,
     sessionId,
+    sessionGuildId: session.guildId,
+    sessionChannel: session.channelId,
+    allActiveGuilds: [...activeSessions.keys()],
   });
 
   // CRITICAL: Stop the recording FIRST, then try to reply.

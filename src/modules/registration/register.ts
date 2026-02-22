@@ -176,11 +176,34 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
   });
 
   const mappingNote = mappedCount > 0
-    ? `\nMapped **${mappedCount}** player(s) from the team roster to Discord members.`
-    : '\nNo player mappings found — make sure team members have linked their Discord on MatchScheduler.';
+    ? `Mapped **${mappedCount}** player(s) from the team roster to Discord members.`
+    : 'No player mappings found — make sure team members have linked their Discord on MatchScheduler.';
+
+  // Check voice channel permissions — warn if the bot can't connect to any voice channel
+  let voiceWarning = '';
+  if (guild) {
+    const me = guild.members.me;
+    if (me) {
+      const channels = await guild.channels.fetch();
+      const voiceChannels = channels.filter(
+        ch => ch !== null && (ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice)
+      );
+      const canJoinAny = voiceChannels.some(ch => {
+        const perms = ch!.permissionsFor(me);
+        return perms.has(PermissionFlagsBits.ViewChannel)
+          && perms.has(PermissionFlagsBits.Connect)
+          && perms.has(PermissionFlagsBits.Speak);
+      });
+      if (!canJoinAny && voiceChannels.size > 0) {
+        voiceWarning = '\n\n⚠️ **Warning:** The bot cannot connect to any voice channel. Recording will fail until permissions are fixed.\nGo to a voice channel → **Edit Channel** → **Permissions** → add the bot\'s role → enable **View Channel**, **Connect**, and **Speak**.';
+      } else if (voiceChannels.size === 0) {
+        voiceWarning = '\n\n⚠️ **Warning:** No voice channels found in this server.';
+      }
+    }
+  }
 
   await interaction.reply({
-    content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.${mappingNote}`,
+    content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.\n${mappingNote}${voiceWarning}`,
     flags: MessageFlags.Ephemeral,
   });
 }
