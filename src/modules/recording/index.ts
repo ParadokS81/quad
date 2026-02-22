@@ -94,13 +94,24 @@ export const recordingModule: BotModule = {
         try { existingConn.destroy(); } catch { /* */ }
       }
       // If the bot is visually in a voice channel with no active recording,
-      // disconnect via the gateway so it actually leaves.
+      // force-disconnect via a raw gateway voice state update (opcode 4).
+      // guild.members.me.voice.disconnect() doesn't reliably work right after
+      // a restart because the voice state may not be fully hydrated yet.
       if (guild.members.me?.voice.channelId) {
-        logger.info('Disconnecting from stale voice channel on startup', {
-          guild: guild.name,
-          channel: guild.members.me.voice.channel?.name,
+        const channelName = guild.members.me.voice.channel?.name;
+        logger.info('Force-disconnecting from stale voice channel on startup', {
+          guild: guild.name, channel: channelName,
         });
-        try { await guild.members.me.voice.disconnect(); } catch { /* */ }
+        try {
+          guild.shard.send({
+            op: 4,
+            d: { guild_id: guild.id, channel_id: null, self_mute: false, self_deaf: false },
+          });
+        } catch (err) {
+          logger.warn('Failed to send gateway voice disconnect', {
+            guild: guild.name, error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
 
