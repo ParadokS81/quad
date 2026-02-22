@@ -197,8 +197,8 @@ async function joinWithRetry(opts: {
 }): Promise<VoiceConnection | null> {
   const { voiceChannel, guildId, sessionId } = opts;
   const maxAttempts = 3;
-  const timeoutPerAttempt = 15_000;
-  const maxBounces = 4; // Signalling↔Connecting cycles before giving up early
+  const timeoutPerAttempt = 30_000;
+  const maxBounces = 50; // Safety net — abort if stuck in loop for ~15s
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const connection = joinVoiceChannel({
@@ -210,9 +210,9 @@ async function joinWithRetry(opts: {
       debug: true,
     });
 
-    // Log DAVE/networking debug events (shows opcodes, DAVE negotiation, UDP state)
+    // Log DAVE/networking debug events — info level so they show in production logs
     const debugLog = (message: string) => {
-      logger.debug('Voice debug', { sessionId, attempt, message });
+      logger.info('Voice debug', { sessionId, attempt, message });
     };
     connection.on('debug', debugLog);
 
@@ -419,9 +419,16 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     // Ensure bot actually leaves the voice channel at the gateway level.
     // connection.destroy() in joinWithRetry may not send a gateway disconnect
     // if the DAVE handshake never completed, leaving the bot visually stuck.
+    // Use raw gateway opcode 4 — me.voice.disconnect() is unreliable here.
     try {
-      const me = interaction.guild?.members.me;
-      if (me?.voice.channelId) await me.voice.disconnect();
+      const guild = interaction.guild;
+      if (guild?.members.me?.voice.channelId) {
+        guild.shard.send({
+          op: 4,
+          d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
+        });
+        logger.info('Sent gateway disconnect after join failure', { guildId });
+      }
     } catch { /* best effort */ }
 
     await interaction.editReply({
