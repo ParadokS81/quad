@@ -9,8 +9,10 @@ import { type Client, ChannelType, PermissionFlagsBits } from 'discord.js';
 import { type Firestore, FieldValue } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
 import { syncGuildChannels } from './channels.js';
+import { startTeamListener } from '../availability/listener.js';
 
 let unsubscribe: (() => void) | null = null;
+const processing = new Set<string>(); // Guard against duplicate handling
 
 /**
  * Start listening for channel creation requests.
@@ -23,12 +25,17 @@ export function startCreateChannelListener(db: Firestore, client: Client): void 
     (snapshot) => {
       for (const change of snapshot.docChanges()) {
         if (change.type === 'added' || change.type === 'modified') {
-          handleCreateChannelRequest(db, change.doc, client).catch((err) => {
-            logger.error('Create channel request handler failed', {
-              docId: change.doc.id,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
+          const docId = change.doc.id;
+          if (processing.has(docId)) continue;
+          processing.add(docId);
+          handleCreateChannelRequest(db, change.doc, client)
+            .catch((err) => {
+              logger.error('Create channel request handler failed', {
+                docId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            })
+            .finally(() => processing.delete(docId));
         }
       }
     },
@@ -145,6 +152,18 @@ async function handleCreateChannelRequest(
 
     // Re-sync available channels so the dropdown includes the new one
     await syncGuildChannels(db, client, guildId);
+
+    // Start the availability listener so the grid gets posted immediately
+    const teamId = doc.id;
+    try {
+      await startTeamListener(teamId, channel.id, null);
+      logger.info('Started availability listener for new schedule channel', { teamId, channelId: channel.id });
+    } catch (listenerErr) {
+      logger.warn('Failed to start availability listener after channel creation', {
+        teamId,
+        error: listenerErr instanceof Error ? listenerErr.message : String(listenerErr),
+      });
+    }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     logger.error('Failed to create schedule channel', {

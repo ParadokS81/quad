@@ -110,7 +110,7 @@ export function getTeamAvailability(teamId: string): AvailabilityData | null {
 
 // ── Per-team lifecycle ───────────────────────────────────────────────────────
 
-async function startTeamListener(
+export async function startTeamListener(
     teamId: string,
     channelId: string,
     storedMessageId: string | null,
