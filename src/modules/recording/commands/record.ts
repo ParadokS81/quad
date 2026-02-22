@@ -606,18 +606,22 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
     actions.push('Cleared joining lock');
   }
 
-  // 3. Force-disconnect from voice at gateway level FIRST (raw opcode 4)
-  //    Must happen before vc.destroy() — destroy() clears the local voice state,
-  //    so guild.members.me.voice.channelId becomes null and we'd skip this step.
+  // 3. Force-disconnect from voice at gateway level (raw opcode 4)
+  //    ALWAYS send this — after a restart the local cache may be empty
+  //    (guild.members.me.voice.channelId is null) even though Discord still
+  //    thinks the bot is in a voice channel. Sending opcode 4 with channel_id: null
+  //    is harmless if the bot isn't actually in voice.
   const guild = interaction.guild;
-  if (guild?.members.me?.voice.channelId) {
-    const channelName = guild.members.me.voice.channel?.name;
+  if (guild) {
+    const channelName = guild.members.me?.voice.channel?.name;
     try {
       guild.shard.send({
         op: 4,
         d: { guild_id: guildId, channel_id: null, self_mute: false, self_deaf: false },
       });
-      actions.push(`Gateway disconnect from voice channel "${channelName}"`);
+      actions.push(channelName
+        ? `Gateway disconnect from voice channel "${channelName}"`
+        : 'Gateway disconnect sent (force)');
     } catch {
       actions.push('Gateway disconnect failed');
     }
