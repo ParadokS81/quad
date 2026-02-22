@@ -530,14 +530,13 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
     allActiveGuilds: [...activeSessions.keys()],
   });
 
-  // CRITICAL: Stop the recording FIRST, then try to reply.
-  // If deferReply/editReply fail (Discord API hiccup), the recording is still saved.
+  // Defer reply immediately — must happen within 3s of the interaction
+  await interaction.deferReply();
+
   const summary = await stopRecording(guildId);
 
-  // Best-effort reply to the interaction — never let a Discord API error undo the stop
+  // Best-effort reply with summary — recording is already saved at this point
   try {
-    await interaction.deferReply();
-
     if (summary) {
       const durationSec = Math.round((summary.endTime.getTime() - summary.startTime.getTime()) / 1000);
       const duration = formatDuration(durationSec);
