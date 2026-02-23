@@ -21,3 +21,21 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  mumble:
+    image: mumblevoip/mumble-server:latest
+    container_name: mumble-server
+    restart: unless-stopped
+    ports:
+      - "64738:64738"
+      - "64738:64738/udp"
+    volumes:
+      - ./mumble-data:/data
+    environment:
+      MUMBLE_SUPERUSER_PASSWORD: "${MUMBLE_SUPERUSER_PASSWORD:-changeme}"
+      MUMBLE_CONFIG_WELCOMETEXT: "Welcome to the QuakeWorld Voice Server"
+      MUMBLE_CONFIG_USERS: 50
+      MUMBLE_CONFIG_BANDWIDTH: 128000
+      MUMBLE_CONFIG_SERVERPASSWORD: "${MUMBLE_SERVER_PASSWORD:-}"
+      MUMBLE_CONFIG_REGISTERNAME: "QuakeWorld Voice"
+      MUMBLE_CONFIG_ALLOWRECORDING: "true"
