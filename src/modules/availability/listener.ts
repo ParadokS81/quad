@@ -622,6 +622,14 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
     const state = activeTeams.get(teamId);
     if (!state || !firestoreDb) return;
 
+    // If week has rolled since last render, trigger a render which will handle resubscription.
+    // This is the only active rollover detector — Firestore snapshots alone won't fire if
+    // nobody updates availability right after midnight.
+    if (getCurrentWeekId() !== state.weekId) {
+        scheduleRender(teamId);
+        return;
+    }
+
     try {
         // Scheduled matches for both weeks
         const [currentMatchesSnap, nextMatchesSnap] = await Promise.all([
