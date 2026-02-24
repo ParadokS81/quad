@@ -4,15 +4,19 @@
  * Handles:
  * - avail:editDay:{teamId}            — Day select on current week grid
  * - avail:editDay:{teamId}:next       — Day select on next week grid
- * - avail:editSlots:{teamId}:{cetDay}:{weekId} — Time slot multi-select on ephemeral
+ * - avail:toggleSlot:{teamId}:{cetDay}:{weekId}:{cetTime} — Toggle a time slot button
+ * - avail:saveSlots:{teamId}:{cetDay}:{weekId}            — Save toggled slots to Firestore
  */
 
 import {
     type ButtonInteraction,
     type StringSelectMenuInteraction,
     StringSelectMenuBuilder,
+    ButtonBuilder,
+    ButtonStyle,
     ActionRowBuilder,
     MessageFlags,
+    ComponentType,
 } from 'discord.js';
 import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
@@ -56,6 +60,10 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
     if (customId.startsWith('avail:clearWeek:')) {
         await handleClearWeek(interaction);
+    } else if (customId.startsWith('avail:toggleSlot:')) {
+        await handleSlotToggle(interaction);
+    } else if (customId.startsWith('avail:saveSlots:')) {
+        await handleSaveSlots(interaction);
     } else {
         await interaction.reply({ content: 'Unknown button.', flags: MessageFlags.Ephemeral });
     }
@@ -66,8 +74,6 @@ export async function handleSelectMenu(interaction: StringSelectMenuInteraction)
 
     if (customId.startsWith('avail:editDay:')) {
         await handleDaySelect(interaction);
-    } else if (customId.startsWith('avail:editSlots:')) {
-        await handleSlotSelect(interaction);
     } else {
         await interaction.reply({ content: 'Unknown menu.', flags: MessageFlags.Ephemeral });
     }
@@ -76,8 +82,8 @@ export async function handleSelectMenu(interaction: StringSelectMenuInteraction)
 // ── Edit Day Flow ───────────────────────────────────────────────────────────
 
 /**
- * Step 1: User selects a day from the persistent message or "edit another" menu.
- * Shows an ephemeral with time slot checkboxes, current slots pre-checked.
+ * Step 1: User selects a day from the persistent message dropdown.
+ * Shows an ephemeral with toggle buttons for each time slot.
  *
  * CustomId format:
  * - avail:editDay:{teamId}       — current week
@@ -96,7 +102,6 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
 
     const weekId = isNextWeek ? getNextWeekId() : getCurrentWeekId();
 
-    // Only check past for current week (next week is always fully available)
     if (!isNextWeek && isDayPast(cetDay, weekId)) {
         await interaction.editReply({ content: 'This day has already passed.' });
         return;
@@ -104,43 +109,64 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
 
     const currentSlots = getUserSlotsForWeek(teamId, user.uid, cetDay, weekId);
 
-    // Filter out past time slots for current week's today, show all otherwise
-    const options = CET_SLOT_TIMES
-        .filter(time => isNextWeek || !isSlotPast(cetToUtcSlotId(cetDay, time), weekId))
-        .map(time => ({
-            label: `${formatCetTime(time)} CET`,
-            value: time,
-            default: currentSlots.includes(time),
-        }));
+    // Filter out past time slots for current week, show all for next week
+    const visibleSlots = CET_SLOT_TIMES
+        .filter(time => isNextWeek || !isSlotPast(cetToUtcSlotId(cetDay, time), weekId));
 
-    if (options.length === 0) {
+    if (visibleSlots.length === 0) {
         await interaction.editReply({ content: 'All time slots for this day have passed.' });
         return;
     }
 
-    const select = new StringSelectMenuBuilder()
-        .setCustomId(`avail:editSlots:${teamId}:${cetDay}:${weekId}`)
-        .setPlaceholder('Select times...')
-        .setMinValues(0)
-        .setMaxValues(options.length)
-        .addOptions(options);
+    const components = buildSlotButtonGrid(visibleSlots, currentSlots, teamId, cetDay, weekId);
 
     const dayLabel = formatDayLabel(cetDay, weekId);
     const weekLabel = isNextWeek ? ' (next week)' : '';
 
     await interaction.editReply({
-        content: `**${dayLabel}${weekLabel}**\nSelect which times you're available:`,
-        components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+        content: `**${dayLabel}${weekLabel}**\nTap to toggle your availability, then save:`,
+        components,
     });
 }
 
 /**
- * Step 2: User submits time slot selections. Diffs against current state,
- * writes to Firestore, and shows confirmation with "edit another day" option.
- *
- * CustomId: avail:editSlots:{teamId}:{cetDay}:{weekId}
+ * Step 2: User taps a time slot button to toggle it.
+ * Flips the button style (green ↔ gray) without writing to Firestore.
  */
-async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+async function handleSlotToggle(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferUpdate();
+
+    const clickedId = interaction.customId;
+
+    // Rebuild components from the current message, flipping the clicked button
+    const rows = interaction.message.components
+        .filter(row => row.type === ComponentType.ActionRow)
+        .map(row => {
+            const newRow = new ActionRowBuilder<ButtonBuilder>();
+            for (const component of row.components) {
+                if (component.type !== ComponentType.Button) continue;
+                const btn = ButtonBuilder.from(component);
+                if (component.customId === clickedId) {
+                    // Toggle: Success ↔ Secondary
+                    btn.setStyle(
+                        component.style === ButtonStyle.Success
+                            ? ButtonStyle.Secondary
+                            : ButtonStyle.Success,
+                    );
+                }
+                newRow.addComponents(btn);
+            }
+            return newRow;
+        });
+
+    await interaction.editReply({ components: rows });
+}
+
+/**
+ * Step 3: User clicks Save. Reads button states from the message,
+ * diffs against Firestore, and commits changes.
+ */
+async function handleSaveSlots(interaction: ButtonInteraction): Promise<void> {
     await interaction.deferUpdate();
 
     const parts = interaction.customId.split(':');
@@ -151,7 +177,20 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
     const user = await resolveUser(interaction.user.id, teamId);
     if (!user) return replyNotLinked(interaction, teamId);
 
-    const selectedCetTimes = interaction.values;
+    // Read selected slots from button styles
+    const selectedCetTimes: string[] = [];
+    for (const row of interaction.message.components.filter(r => r.type === ComponentType.ActionRow)) {
+        for (const component of row.components) {
+            if (component.type !== ComponentType.Button) continue;
+            if (!component.customId?.startsWith('avail:toggleSlot:')) continue;
+            if (component.style === ButtonStyle.Success) {
+                // Extract cetTime from: avail:toggleSlot:{teamId}:{cetDay}:{weekId}:{cetTime}
+                const cetTime = component.customId.split(':')[5];
+                if (cetTime) selectedCetTimes.push(cetTime);
+            }
+        }
+    }
+
     const currentSlots = getUserSlotsForWeek(teamId, user.uid, cetDay, weekId);
 
     const toAdd = selectedCetTimes.filter(t => !currentSlots.includes(t));
@@ -204,7 +243,6 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
 
     await interaction.editReply({ content: summary, components: [] });
 
-    // Auto-delete confirmation after 5 seconds to keep channel clean
     setTimeout(() => {
         interaction.deleteReply().catch(() => {});
     }, 5000);
@@ -212,6 +250,53 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
     logger.info('Availability updated via Discord', {
         teamId, userId: user.uid, cetDay, weekId, added: toAdd.length, removed: toRemove.length,
     });
+}
+
+// ── Button Grid Builder ─────────────────────────────────────────────────────
+
+/**
+ * Build the toggle button grid for time slot selection.
+ * Green (Success) = available, Gray (Secondary) = not available.
+ * Last row has a Save button.
+ */
+function buildSlotButtonGrid(
+    visibleSlots: string[],
+    currentSlots: string[],
+    teamId: string,
+    cetDay: string,
+    weekId: string,
+): ActionRowBuilder<ButtonBuilder>[] {
+    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+    let currentRow = new ActionRowBuilder<ButtonBuilder>();
+
+    for (let i = 0; i < visibleSlots.length; i++) {
+        const cetTime = visibleSlots[i];
+        const isAvailable = currentSlots.includes(cetTime);
+
+        const button = new ButtonBuilder()
+            .setCustomId(`avail:toggleSlot:${teamId}:${cetDay}:${weekId}:${cetTime}`)
+            .setLabel(formatCetTime(cetTime))
+            .setStyle(isAvailable ? ButtonStyle.Success : ButtonStyle.Secondary);
+
+        currentRow.addComponents(button);
+
+        // 5 buttons per row
+        if (currentRow.components.length === 5 || i === visibleSlots.length - 1) {
+            rows.push(currentRow);
+            currentRow = new ActionRowBuilder<ButtonBuilder>();
+        }
+    }
+
+    // Save button on its own row
+    const saveRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`avail:saveSlots:${teamId}:${cetDay}:${weekId}`)
+            .setLabel('Save')
+            .setStyle(ButtonStyle.Primary),
+    );
+    rows.push(saveRow);
+
+    return rows;
 }
 
 // ── Clear Week Flow ─────────────────────────────────────────────────────────
@@ -285,11 +370,6 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function extractTeamId(customId: string): string {
-    // avail:action:teamId or avail:action:teamId:extra
-    return customId.split(':')[2];
-}
-
 /**
  * Get CET time slots the user is available for on a given day+week.
  * Reads from the cached listener state — no extra Firestore read.
@@ -318,10 +398,7 @@ function formatDayLabel(cetDay: string, weekId: string): string {
 
 /**
  * Build the day select menu for editing availability.
- * Used on both the persistent message and the "edit another day" ephemeral.
- *
- * @param customId — includes team and optionally ":next" suffix
- * @param weekId — which week to show days for (defaults to current)
+ * Used on the persistent message.
  */
 export function buildDaySelectMenu(customId: string, weekId?: string): StringSelectMenuBuilder {
     const wId = weekId ?? getCurrentWeekId();
@@ -335,7 +412,6 @@ export function buildDaySelectMenu(customId: string, weekId?: string): StringSel
             return { label, value: day };
         });
 
-    // Discord requires at least 1 option — if all days are past, show a placeholder
     if (options.length === 0) {
         options.push({ label: 'No days remaining', value: '_none' });
     }
