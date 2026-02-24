@@ -14,7 +14,8 @@ import {
     AttachmentBuilder,
     type EmbedBuilder,
     ActionRowBuilder,
-    type ButtonBuilder,
+    ButtonBuilder,
+    ButtonStyle,
     type StringSelectMenuBuilder,
 } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
@@ -311,12 +312,24 @@ export async function syncCardMessages(
 
 // ── Action rows for the persistent message ──────────────────────────────────
 
-function buildActionRows(teamId: string, isNextWeek = false): Array<ActionRowBuilder<StringSelectMenuBuilder>> {
+function buildActionRows(teamId: string, isNextWeek = false): Array<ActionRowBuilder<any>> {
     const customId = isNextWeek
         ? `avail:editDay:${teamId}:next`
         : `avail:editDay:${teamId}`;
     const weekId = isNextWeek ? getNextWeekId() : undefined;
     const daySelect = buildDaySelectMenu(customId, weekId);
-    const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(daySelect);
-    return [row];
+    const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(daySelect);
+
+    const templateRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`avail:saveTemplate:${teamId}:${isNextWeek ? getNextWeekId() : 'current'}`)
+            .setLabel('Save Template')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`avail:options:${teamId}`)
+            .setLabel('⚙ Options')
+            .setStyle(ButtonStyle.Secondary),
+    );
+
+    return [selectRow, templateRow];
 }

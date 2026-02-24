@@ -31,6 +31,7 @@ import {
     isSlotPast,
     formatCetTime,
     CET_SLOT_TIMES,
+    getAdjacentDay,
 } from './time.js';
 import { getAvailabilityForWeek } from './listener.js';
 
@@ -64,6 +65,18 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
         await handleSlotToggle(interaction);
     } else if (customId.startsWith('avail:saveSlots:')) {
         await handleSaveSlots(interaction);
+    } else if (customId.startsWith('avail:prevDay:')) {
+        await handleNavDay(interaction, 'prev');
+    } else if (customId.startsWith('avail:nextDay:')) {
+        await handleNavDay(interaction, 'next');
+    } else if (customId.startsWith('avail:saveTemplate:')) {
+        await handleSaveTemplate(interaction);
+    } else if (customId.startsWith('avail:options:')) {
+        await handleOptions(interaction);
+    } else if (customId.startsWith('avail:toggleRecurring:')) {
+        await handleToggleRecurring(interaction);
+    } else if (customId.startsWith('avail:clearTemplate:')) {
+        await handleClearTemplate(interaction);
     } else {
         await interaction.reply({ content: 'Unknown button.', flags: MessageFlags.Ephemeral });
     }
@@ -252,6 +265,107 @@ async function handleSaveSlots(interaction: ButtonInteraction): Promise<void> {
     });
 }
 
+/**
+ * Handle Prev/Next navigation: save current day, show adjacent day's buttons.
+ * Custom ID format: avail:prevDay:{teamId}:{cetDay}:{weekId} (or avail:nextDay:...)
+ */
+async function handleNavDay(interaction: ButtonInteraction, direction: 'prev' | 'next'): Promise<void> {
+    await interaction.deferUpdate();
+
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+    const cetDay = parts[3];
+    const weekId = parts[4] ?? getCurrentWeekId();
+    const isNextWeek = weekId !== getCurrentWeekId();
+
+    const user = await resolveUser(interaction.user.id, teamId);
+    if (!user) return replyNotLinked(interaction, teamId);
+
+    // ── Save current day (same logic as handleSaveSlots) ──
+    const selectedCetTimes: string[] = [];
+    for (const row of interaction.message.components.filter(r => r.type === ComponentType.ActionRow)) {
+        for (const component of row.components) {
+            if (component.type !== ComponentType.Button) continue;
+            if (!component.customId?.startsWith('avail:toggleSlot:')) continue;
+            if (component.style === ButtonStyle.Success) {
+                const cetTime = component.customId.split(':')[5];
+                if (cetTime) selectedCetTimes.push(cetTime);
+            }
+        }
+    }
+
+    const currentSlots = getUserSlotsForWeek(teamId, user.uid, cetDay, weekId);
+    const toAdd = selectedCetTimes.filter(t => !currentSlots.includes(t));
+    const toRemove = currentSlots.filter(t => !selectedCetTimes.includes(t));
+
+    if (toAdd.length > 0 || toRemove.length > 0) {
+        const docId = `${teamId}_${weekId}`;
+        const updateData: Record<string, any> = {
+            lastUpdated: FieldValue.serverTimestamp(),
+        };
+
+        for (const cetTime of toAdd) {
+            const utcSlotId = cetToUtcSlotId(cetDay, cetTime);
+            updateData[`slots.${utcSlotId}`] = FieldValue.arrayUnion(user.uid);
+            updateData[`unavailable.${utcSlotId}`] = FieldValue.arrayRemove(user.uid);
+        }
+        for (const cetTime of toRemove) {
+            const utcSlotId = cetToUtcSlotId(cetDay, cetTime);
+            updateData[`slots.${utcSlotId}`] = FieldValue.arrayRemove(user.uid);
+        }
+
+        try {
+            const db = getDb();
+            const docRef = db.collection('availability').doc(docId);
+            const doc = await docRef.get();
+            if (!doc.exists) {
+                await docRef.set({ teamId, weekId, slots: {}, unavailable: {}, ...updateData });
+            } else {
+                await docRef.update(updateData);
+            }
+        } catch (err) {
+            logger.error('Failed to save during nav', {
+                teamId, userId: user.uid, direction,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            await interaction.editReply({ content: 'Failed to save — try again.', components: [] });
+            return;
+        }
+
+        logger.info('Availability saved via nav', {
+            teamId, userId: user.uid, cetDay, weekId, direction,
+            added: toAdd.length, removed: toRemove.length,
+        });
+    }
+
+    // ── Navigate to adjacent day ──
+    const nextDay = getAdjacentDay(cetDay, direction, weekId, isNextWeek);
+    if (!nextDay) {
+        await interaction.editReply({ content: 'No more days in this direction.', components: [] });
+        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 3000);
+        return;
+    }
+
+    const newSlots = getUserSlotsForWeek(teamId, user.uid, nextDay, weekId);
+    const visibleSlots = CET_SLOT_TIMES
+        .filter(time => isNextWeek || !isSlotPast(cetToUtcSlotId(nextDay, time), weekId));
+
+    if (visibleSlots.length === 0) {
+        await interaction.editReply({ content: 'All time slots for this day have passed.', components: [] });
+        setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 3000);
+        return;
+    }
+
+    const components = buildSlotButtonGrid(visibleSlots, newSlots, teamId, nextDay, weekId);
+    const dayLabel = formatDayLabel(nextDay, weekId);
+    const weekLabel = isNextWeek ? ' (next week)' : '';
+
+    await interaction.editReply({
+        content: `**${dayLabel}${weekLabel}**\nTap to toggle your availability, then save:`,
+        components,
+    });
+}
+
 // ── Button Grid Builder ─────────────────────────────────────────────────────
 
 /**
@@ -287,14 +401,37 @@ function buildSlotButtonGrid(
         }
     }
 
-    // Save button on its own row
-    const saveRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    // Navigation row: [◀ Prev] [Save] [Next ▶]
+    const isNextWeek = weekId !== getCurrentWeekId();
+    const prevDay = getAdjacentDay(cetDay, 'prev', weekId, isNextWeek);
+    const nextDay = getAdjacentDay(cetDay, 'next', weekId, isNextWeek);
+
+    const navRow = new ActionRowBuilder<ButtonBuilder>();
+
+    navRow.addComponents(
+        new ButtonBuilder()
+            .setCustomId(`avail:prevDay:${teamId}:${cetDay}:${weekId}`)
+            .setLabel('◀ Prev')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(!prevDay),
+    );
+
+    navRow.addComponents(
         new ButtonBuilder()
             .setCustomId(`avail:saveSlots:${teamId}:${cetDay}:${weekId}`)
             .setLabel('Save')
             .setStyle(ButtonStyle.Primary),
     );
-    rows.push(saveRow);
+
+    navRow.addComponents(
+        new ButtonBuilder()
+            .setCustomId(`avail:nextDay:${teamId}:${cetDay}:${weekId}`)
+            .setLabel('Next ▶')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(!nextDay),
+    );
+
+    rows.push(navRow);
 
     return rows;
 }
@@ -366,6 +503,265 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
     });
 
     logger.info('Availability cleared via Discord', { teamId, userId: user.uid, weekId });
+}
+
+// ── Template Actions ─────────────────────────────────────────────────────────
+
+/**
+ * Save current week's availability as the user's template.
+ * Custom ID: avail:saveTemplate:{teamId}:{weekId|'current'}
+ */
+async function handleSaveTemplate(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+    const weekParam = parts[3];
+    const weekId = weekParam === 'current' ? getCurrentWeekId() : weekParam;
+
+    const user = await resolveUser(interaction.user.id, teamId);
+    if (!user) return replyNotLinked(interaction, teamId);
+
+    const availability = getAvailabilityForWeek(teamId, weekId);
+    if (!availability) {
+        await interaction.editReply({ content: 'Mark some availability first, then save as template.' });
+        return;
+    }
+
+    const userSlots: string[] = [];
+    for (const [slotId, users] of Object.entries(availability.slots || {})) {
+        if ((users as string[]).includes(user.uid)) {
+            userSlots.push(slotId);
+        }
+    }
+
+    if (userSlots.length === 0) {
+        await interaction.editReply({ content: 'Mark some availability first, then save as template.' });
+        return;
+    }
+
+    const db = getDb();
+    const userRef = db.collection('users').doc(user.uid);
+    const userDoc = await userRef.get();
+    const existing = userDoc.data()?.template || {};
+
+    await userRef.update({
+        template: {
+            slots: userSlots,
+            recurring: existing.recurring || false,
+            lastAppliedWeekId: existing.lastAppliedWeekId || '',
+            updatedAt: FieldValue.serverTimestamp(),
+        },
+    });
+
+    await interaction.editReply({
+        content: `✓ Template saved (${userSlots.length} slots from this week)`,
+    });
+
+    logger.info('Template saved via Discord', { teamId, userId: user.uid, slotCount: userSlots.length });
+}
+
+/**
+ * Show template options as an ephemeral message.
+ * Custom ID: avail:options:{teamId}
+ */
+async function handleOptions(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+
+    const user = await resolveUser(interaction.user.id, teamId);
+    if (!user) return replyNotLinked(interaction, teamId);
+
+    const db = getDb();
+    const userDoc = await db.collection('users').doc(user.uid).get();
+    const template = userDoc.data()?.template;
+
+    if (!template || !template.slots || template.slots.length === 0) {
+        await interaction.editReply({
+            content: 'No template saved. Use **Save Template** to save your current week.',
+        });
+        return;
+    }
+
+    const recurring = template.recurring || false;
+
+    const components = [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`avail:toggleRecurring:${teamId}`)
+                .setLabel(recurring ? '✓ Recurring ON — Turn Off' : 'Turn On Recurring')
+                .setStyle(recurring ? ButtonStyle.Success : ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`avail:clearTemplate:${teamId}`)
+                .setLabel('Clear Template')
+                .setStyle(ButtonStyle.Danger),
+        ),
+    ];
+
+    await interaction.editReply({
+        content: `**Your template:** ${template.slots.length} slots\n**Recurring:** ${recurring ? 'ON' : 'OFF'}`,
+        components,
+    });
+}
+
+/**
+ * Toggle recurring on the user's template.
+ * Custom ID: avail:toggleRecurring:{teamId}
+ */
+async function handleToggleRecurring(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferUpdate();
+
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+
+    const user = await resolveUser(interaction.user.id, teamId);
+    if (!user) return replyNotLinked(interaction, teamId);
+
+    const db = getDb();
+    const userDoc = await db.collection('users').doc(user.uid).get();
+    const template = userDoc.data()?.template;
+
+    if (!template || !template.slots || template.slots.length === 0) {
+        await interaction.editReply({
+            content: 'No template saved.',
+            components: [],
+        });
+        return;
+    }
+
+    const newRecurring = !template.recurring;
+
+    if (newRecurring) {
+        const teams = userDoc.data()?.teams || {};
+        const currentWeekId = getCurrentWeekId();
+        const nextWeekId = getNextWeekId();
+
+        try {
+            for (const tid of Object.keys(teams)) {
+                await applyTemplateToWeek(db, user.uid, template.slots, tid, currentWeekId);
+                await applyTemplateToWeek(db, user.uid, template.slots, tid, nextWeekId);
+            }
+        } catch (err) {
+            logger.error('Failed to apply template on recurring toggle', {
+                userId: user.uid, error: err instanceof Error ? err.message : String(err),
+            });
+            await interaction.editReply({ content: 'Failed to apply template — try again.', components: [] });
+            return;
+        }
+
+        await db.collection('users').doc(user.uid).update({
+            'template.recurring': true,
+            'template.lastAppliedWeekId': nextWeekId,
+            'template.updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        await interaction.editReply({
+            content: `**Your template:** ${template.slots.length} slots\n**Recurring:** ON ✓\n\nApplied to current + next week.`,
+            components: [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`avail:toggleRecurring:${teamId}`)
+                        .setLabel('✓ Recurring ON — Turn Off')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId(`avail:clearTemplate:${teamId}`)
+                        .setLabel('Clear Template')
+                        .setStyle(ButtonStyle.Danger),
+                ),
+            ],
+        });
+    } else {
+        await db.collection('users').doc(user.uid).update({
+            'template.recurring': false,
+            'template.updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        await interaction.editReply({
+            content: `**Your template:** ${template.slots.length} slots\n**Recurring:** OFF`,
+            components: [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`avail:toggleRecurring:${teamId}`)
+                        .setLabel('Turn On Recurring')
+                        .setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId(`avail:clearTemplate:${teamId}`)
+                        .setLabel('Clear Template')
+                        .setStyle(ButtonStyle.Danger),
+                ),
+            ],
+        });
+    }
+
+    logger.info('Recurring toggled via Discord', { teamId, userId: user.uid, recurring: newRecurring });
+}
+
+/**
+ * Clear the user's template.
+ * Custom ID: avail:clearTemplate:{teamId}
+ */
+async function handleClearTemplate(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferUpdate();
+
+    const parts = interaction.customId.split(':');
+    const teamId = parts[2];
+
+    const user = await resolveUser(interaction.user.id, teamId);
+    if (!user) return replyNotLinked(interaction, teamId);
+
+    const db = getDb();
+    await db.collection('users').doc(user.uid).update({
+        template: FieldValue.delete(),
+    });
+
+    await interaction.editReply({
+        content: 'Template cleared.',
+        components: [],
+    });
+
+    logger.info('Template cleared via Discord', { teamId, userId: user.uid });
+}
+
+/**
+ * Apply template slots to a team's week availability.
+ * Skips if the user already has any slots in that week.
+ */
+async function applyTemplateToWeek(
+    db: FirebaseFirestore.Firestore,
+    userId: string,
+    templateSlots: string[],
+    teamId: string,
+    weekId: string,
+): Promise<void> {
+    const docId = `${teamId}_${weekId}`;
+    const docRef = db.collection('availability').doc(docId);
+    const doc = await docRef.get();
+
+    if (doc.exists) {
+        const slots = doc.data()?.slots || {};
+        for (const users of Object.values(slots)) {
+            if (Array.isArray(users) && users.includes(userId)) {
+                return; // Already has availability — don't overwrite
+            }
+        }
+    }
+
+    const updateData: Record<string, any> = {
+        lastUpdated: FieldValue.serverTimestamp(),
+    };
+
+    for (const slotId of templateSlots) {
+        updateData[`slots.${slotId}`] = FieldValue.arrayUnion(userId);
+        updateData[`unavailable.${slotId}`] = FieldValue.arrayRemove(userId);
+    }
+
+    if (doc.exists) {
+        await docRef.update(updateData);
+    } else {
+        await docRef.set({ teamId, weekId, slots: {}, unavailable: {}, ...updateData });
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
