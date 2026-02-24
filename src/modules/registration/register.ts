@@ -11,11 +11,50 @@
  * QW Hub matches belong to this team.
  */
 
-import { ChatInputCommandInteraction, ChannelType, Collection, Guild, GuildMember, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import { ChatInputCommandInteraction, ChannelType, Client, Collection, Guild, GuildMember, GuildChannel, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
 
 const SCHEDULER_URL = process.env.SCHEDULER_URL || 'https://matchscheduler.web.app';
+
+// Per-session throttle — only DM each team once per bot process run to avoid spam
+const permErrorNotifiedTeams = new Set<string>();
+
+/**
+ * DM the user who ran /register to warn them about a channel permission issue.
+ * Best-effort — logs but does not throw. Throttled once per team per process run.
+ */
+export async function dmRegistrantAboutPermissions(
+  client: Client,
+  teamId: string,
+  channelId: string,
+): Promise<void> {
+  if (permErrorNotifiedTeams.has(teamId)) return;
+  const db = getDb();
+  try {
+    const regDoc = await db.collection('botRegistrations').doc(teamId).get();
+    if (!regDoc.exists) return;
+    const registrantId: string | undefined = regDoc.data()?.registrantDiscordUserId;
+    if (!registrantId) return;
+
+    const user = await client.users.fetch(registrantId);
+    await user.send([
+      `⚠️ **Quad Bot — Channel permission issue**`,
+      ``,
+      `I'm missing permissions to post in <#${channelId}>.`,
+      ``,
+      `Make sure I have **Send Messages** and **Embed Links** in that channel, or pick a different channel at ${SCHEDULER_URL}/#/settings/discord`,
+    ].join('\n'));
+    permErrorNotifiedTeams.add(teamId);
+    logger.info('Sent channel permission warning DM to registrant', { teamId, channelId, registrantId });
+  } catch (err) {
+    logger.warn('Failed to DM registrant about channel permission issue', {
+      teamId,
+      channelId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 export interface BotRegistration {
   teamId: string;
@@ -24,6 +63,9 @@ export interface BotRegistration {
   guildId: string;
   guildName: string;
   knownPlayers: Record<string, string>; // discordUserId → QW name
+  registeredChannelId: string | null;
+  registeredCategoryId: string | null;
+  registeredCategoryName: string | null;
 }
 
 /** Get the active bot registration for a guild, or null if not registered. */
@@ -45,7 +87,69 @@ export async function getRegistrationForGuild(guildId: string): Promise<BotRegis
     guildId: data.guildId,
     guildName: data.guildName,
     knownPlayers: data.knownPlayers || {},
+    registeredChannelId: data.registeredChannelId || null,
+    registeredCategoryId: data.registeredCategoryId || null,
+    registeredCategoryName: data.registeredCategoryName || null,
   };
+}
+
+/**
+ * Resolve the correct registration for a specific channel context.
+ * - Single registration guild: returns it directly (no ambiguity)
+ * - Multi registration guild: matches by registeredChannelId or registeredCategoryId
+ * - No match: returns null
+ */
+export async function resolveRegistrationForChannel(
+  guildId: string,
+  channelId: string,
+  client: Client,
+): Promise<BotRegistration | null> {
+  const registrations = await getRegistrationsForGuild(guildId);
+
+  if (registrations.length === 0) return null;
+  if (registrations.length === 1) return registrations[0];
+
+  // Multiple registrations — try exact channel match first
+  const exactMatch = registrations.find(r => r.registeredChannelId === channelId);
+  if (exactMatch) return exactMatch;
+
+  // Try category match
+  try {
+    const channel = await client.channels.fetch(channelId);
+    const categoryId = (channel as any)?.parentId;
+    if (categoryId) {
+      const categoryMatch = registrations.find(r => r.registeredCategoryId === categoryId);
+      if (categoryMatch) return categoryMatch;
+    }
+  } catch {
+    // Channel fetch failed — fall through to null
+  }
+
+  return null;
+}
+
+/** Get ALL active bot registrations for a guild. */
+export async function getRegistrationsForGuild(guildId: string): Promise<BotRegistration[]> {
+  const db = getDb();
+  const snap = await db.collection('botRegistrations')
+    .where('guildId', '==', guildId)
+    .where('status', '==', 'active')
+    .get();
+
+  return snap.docs.map(doc => {
+    const data = doc.data();
+    return {
+      teamId: data.teamId,
+      teamTag: data.teamTag,
+      teamName: data.teamName,
+      guildId: data.guildId,
+      guildName: data.guildName,
+      knownPlayers: data.knownPlayers || {},
+      registeredChannelId: data.registeredChannelId || null,
+      registeredCategoryId: data.registeredCategoryId || null,
+      registeredCategoryName: data.registeredCategoryName || null,
+    };
+  });
 }
 
 export async function handleRegister(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -56,16 +160,6 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
   if (!guildId) {
     await interaction.reply({
       content: 'This command must be used in a server, not in DMs.',
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  // Check if this guild already has an active registration
-  const existingReg = await getRegistrationForGuild(guildId);
-  if (existingReg) {
-    await interaction.reply({
-      content: `This server is linked to **${existingReg.teamName}** (${existingReg.teamTag}). To change, disconnect from team settings on MatchScheduler first.`,
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -136,29 +230,17 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     }
   }
 
-  // Pick a default notification channel: system channel if bot can post, else first postable channel
-  let defaultChannelId: string | null = null;
-  if (guild) {
-    const systemChannel = guild.systemChannel;
-    if (systemChannel) {
-      const match = availableChannels.find(ch => ch.id === systemChannel.id);
-      if (match?.canPost) defaultChannelId = systemChannel.id;
-    }
-    if (!defaultChannelId) {
-      const firstPostable = availableChannels.find(ch => ch.canPost);
-      if (firstPostable) defaultChannelId = firstPostable.id;
-    }
-  }
-
-  // Activate the registration with the player mapping, guild members, channels, and default notification channel
+  // Activate the registration with the player mapping, guild members, and channels
   await doc.ref.update({
     guildId,
     guildName,
     knownPlayers,
     guildMembers,
     availableChannels,
-    notificationChannelId: defaultChannelId,
-    notificationsEnabled: !!defaultChannelId,
+    registrantDiscordUserId: userId,
+    registeredChannelId: interaction.channelId,
+    registeredCategoryId: interaction.channel instanceof GuildChannel ? interaction.channel.parentId : null,
+    registeredCategoryName: interaction.channel instanceof GuildChannel ? interaction.channel.parent?.name || null : null,
     status: 'active',
     activatedAt: new Date(),
     updatedAt: new Date(),
@@ -203,8 +285,40 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     }
   }
 
+  // Check if other teams are registered in this guild
+  const otherRegs = await db.collection('botRegistrations')
+    .where('guildId', '==', guildId)
+    .where('status', '==', 'active')
+    .get();
+  // Subtract 1 because we just activated our own
+  const otherTeamCount = otherRegs.size - 1;
+
+  // Multi-team guild: disable auto-record on all registrations (future-proofing)
+  if (otherTeamCount > 0) {
+    for (const regDoc of otherRegs.docs) {
+      const regData = regDoc.data();
+      if (regData.autoRecord?.enabled) {
+        await regDoc.ref.update({
+          'autoRecord.enabled': false,
+          updatedAt: new Date(),
+        });
+        logger.info('Disabled auto-record for multi-team guild', {
+          teamId: regData.teamId,
+          guildId,
+        });
+      }
+    }
+  }
+
+  const channelNote = otherTeamCount > 0
+    ? `\nThis server has **${otherTeamCount + 1}** teams registered. Use \`/record start\` from this channel to start a recording session.`
+    : '';
+
+  // Tell the user which notification channel was auto-selected (or warn if none found)
+  const scheduleNote = `\n\nSet up a **#schedule** channel at ${SCHEDULER_URL}/#/settings/discord to see availability grids and match notifications.`;
+
   await interaction.reply({
-    content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.\n${mappingNote}${voiceWarning}`,
+    content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.\n${mappingNote}${channelNote}${scheduleNote}${voiceWarning}`,
     flags: MessageFlags.Ephemeral,
   });
 }

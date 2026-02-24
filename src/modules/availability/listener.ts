@@ -11,7 +11,7 @@
  * both weeks, and Discord message post/update.
  */
 
-import { type Client } from 'discord.js';
+import { type Client, type TextChannel } from 'discord.js';
 import { type Firestore } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
 import {
@@ -45,6 +45,8 @@ interface TeamState {
     nextWeekUnsub: () => void;
     nextWeekAvailability: AvailabilityData | null;
     nextWeekMatches: ScheduledMatchDisplay[];
+    // Proposals (real-time subscription)
+    proposalUnsub: () => void;
     // Shared
     registrationUnsub: () => void;
     pollTimer: ReturnType<typeof setInterval> | null;
@@ -53,6 +55,12 @@ interface TeamState {
     activeProposals: ActiveProposalDisplay[];
     matchMessageIds: string[];
     proposalMessageIds: string[];
+    // Event message — rolling "last N events" line at bottom of #schedule
+    eventMessageId: string | null;
+    recentEvents: string[];          // last 3 event lines (newest first)
+    prevProposalIds: Set<string>;
+    prevMatchKeys: Set<string>;      // "slotId:opponentId" composite keys
+    isInitialRender: boolean;
 }
 
 const activeTeams = new Map<string, TeamState>();
@@ -81,11 +89,12 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const nextWeekMessageId = (data.nextWeekMessageId as string | null) ?? null;
         const matchMessageIds = (data.matchMessageIds as string[] | undefined) ?? [];
         const proposalMessageIds = (data.proposalMessageIds as string[] | undefined) ?? [];
+        const eventMessageId = (data.eventMessageId as string | null) ?? null;
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds);
+            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds, eventMessageId);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -130,6 +139,7 @@ export async function startTeamListener(
     storedNextWeekMessageId: string | null = null,
     storedMatchMessageIds: string[] = [],
     storedProposalMessageIds: string[] = [],
+    storedEventMessageId: string | null = null,
 ): Promise<void> {
     if (!firestoreDb || !botClient) return;
 
@@ -156,6 +166,8 @@ export async function startTeamListener(
         nextWeekUnsub: () => {},
         nextWeekAvailability: null,
         nextWeekMatches: [],
+        // Proposals
+        proposalUnsub: () => {},
         // Shared
         registrationUnsub: () => {},
         pollTimer: null,
@@ -164,6 +176,12 @@ export async function startTeamListener(
         activeProposals: [],
         matchMessageIds: storedMatchMessageIds,
         proposalMessageIds: storedProposalMessageIds,
+        // Event message
+        eventMessageId: storedEventMessageId,
+        recentEvents: [],
+        prevProposalIds: new Set(),
+        prevMatchKeys: new Set(),
+        isInitialRender: true,
     };
 
     activeTeams.set(teamId, state);
@@ -174,6 +192,9 @@ export async function startTeamListener(
     // Subscribe to availability changes for both weeks
     state.availabilityUnsub = subscribeAvailability(teamId, weekId, 'current');
     state.nextWeekUnsub = subscribeAvailability(teamId, nextWeekId, 'next');
+
+    // Subscribe to proposals (real-time add/cancel detection)
+    state.proposalUnsub = subscribeProposals(teamId);
 
     // Subscribe to registration config changes
     state.registrationUnsub = subscribeRegistration(teamId);
@@ -197,6 +218,7 @@ function teardownTeam(teamId: string): void {
 
     state.availabilityUnsub();
     state.nextWeekUnsub();
+    state.proposalUnsub();
     state.registrationUnsub();
     if (state.debounceTimer) clearTimeout(state.debounceTimer);
     if (state.pollTimer) clearInterval(state.pollTimer);
@@ -275,6 +297,184 @@ function subscribeRegistration(teamId: string): () => void {
                 });
             },
         );
+}
+
+// ── Proposal subscription ────────────────────────────────────────────────────
+
+/**
+ * Subscribe to active proposals for a team (both sides — proposer and opponent).
+ * Fires immediately on load (initial state) and on any add/cancel.
+ * When a proposal is cancelled on the website, the doc leaves the active query,
+ * triggering a snapshot → refreshProposals → render → card deleted.
+ */
+function subscribeProposals(teamId: string): () => void {
+    if (!firestoreDb) return () => {};
+
+    const proposerDocs = new Map<string, FirebaseFirestore.DocumentData>();
+    const opponentDocs = new Map<string, FirebaseFirestore.DocumentData>();
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+
+    function scheduleRefresh() {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+            debounce = null;
+            refreshProposals(teamId, proposerDocs, opponentDocs).catch(err => {
+                logger.error('Failed to refresh proposals', {
+                    teamId, error: err instanceof Error ? err.message : String(err),
+                });
+            });
+        }, 1000);
+    }
+
+    const unsub1 = firestoreDb.collection('matchProposals')
+        .where('proposerTeamId', '==', teamId)
+        .where('status', '==', 'active')
+        .onSnapshot(
+            (snap) => {
+                proposerDocs.clear();
+                for (const doc of snap.docs) proposerDocs.set(doc.id, doc.data());
+                scheduleRefresh();
+            },
+            (err) => logger.error('Proposal subscription error (proposer)', {
+                teamId, error: err instanceof Error ? err.message : String(err),
+            }),
+        );
+
+    const unsub2 = firestoreDb.collection('matchProposals')
+        .where('opponentTeamId', '==', teamId)
+        .where('status', '==', 'active')
+        .onSnapshot(
+            (snap) => {
+                opponentDocs.clear();
+                for (const doc of snap.docs) opponentDocs.set(doc.id, doc.data());
+                scheduleRefresh();
+            },
+            (err) => logger.error('Proposal subscription error (opponent)', {
+                teamId, error: err instanceof Error ? err.message : String(err),
+            }),
+        );
+
+    return () => {
+        if (debounce) clearTimeout(debounce);
+        unsub1();
+        unsub2();
+    };
+}
+
+/**
+ * Rebuild state.activeProposals from the current snapshot docs.
+ * Fetches opponent logos + availability, computes viable slots.
+ * Triggers a re-render if the proposal count changed.
+ */
+async function refreshProposals(
+    teamId: string,
+    proposerDocs: Map<string, FirebaseFirestore.DocumentData>,
+    opponentDocs: Map<string, FirebaseFirestore.DocumentData>,
+): Promise<void> {
+    const state = activeTeams.get(teamId);
+    if (!state || !firestoreDb) return;
+
+    const prevCount = state.activeProposals.length;
+
+    // Deduplicate both sides
+    const seenIds = new Set<string>();
+    const allDocs: Array<[string, FirebaseFirestore.DocumentData]> = [];
+    for (const entry of [...proposerDocs.entries(), ...opponentDocs.entries()]) {
+        if (seenIds.has(entry[0])) continue;
+        seenIds.add(entry[0]);
+        allDocs.push(entry);
+    }
+
+    if (allDocs.length === 0) {
+        state.activeProposals = [];
+        if (prevCount !== 0) scheduleRender(teamId);
+        return;
+    }
+
+    // Collect unique opponent teamIds and (opponent, weekId) pairs for batch reads
+    const opponentTeamIds = new Set<string>();
+    const availDocIds = new Set<string>();
+    for (const [, data] of allDocs) {
+        const isProposer = data.proposerTeamId === teamId;
+        const oppId = String(isProposer ? data.opponentTeamId : data.proposerTeamId);
+        const weekId = String(data.weekId);
+        opponentTeamIds.add(oppId);
+        availDocIds.add(`${oppId}_${weekId}`);
+    }
+
+    // Batch fetch opponent team docs (logo URLs) + opponent availability docs
+    const [teamDocs, availDocs] = await Promise.all([
+        Promise.all([...opponentTeamIds].map(id => firestoreDb!.collection('teams').doc(id).get())),
+        Promise.all([...availDocIds].map(id => firestoreDb!.collection('availability').doc(id).get())),
+    ]);
+
+    const opponentLogoMap = new Map<string, string | null>();
+    for (const doc of teamDocs) {
+        opponentLogoMap.set(doc.id, doc.exists ? (doc.data()!.activeLogo?.urls?.small ?? null) : null);
+    }
+
+    const opponentAvailMap = new Map<string, AvailabilityData | null>();
+    for (const doc of availDocs) {
+        opponentAvailMap.set(doc.id, doc.exists ? doc.data() as AvailabilityData : null);
+    }
+
+    // Build enriched proposal list
+    const activeProposals: typeof state.activeProposals = [];
+    for (const [id, data] of allDocs) {
+        const isProposer = data.proposerTeamId === teamId;
+        const oppId = String(isProposer ? data.opponentTeamId : data.proposerTeamId);
+        const weekId = String(data.weekId);
+
+        const teamAvail = weekId === state.weekId
+            ? state.lastAvailability
+            : (weekId === state.nextWeekId ? state.nextWeekAvailability : null);
+        const oppAvail = opponentAvailMap.get(`${oppId}_${weekId}`) ?? null;
+
+        const minFilter = data.minFilter as { yourTeam: number; opponent: number } | undefined;
+        const ourMin = isProposer ? (minFilter?.yourTeam ?? 4) : (minFilter?.opponent ?? 4);
+        const oppMin = isProposer ? (minFilter?.opponent ?? 4) : (minFilter?.yourTeam ?? 4);
+        const ourStandin = Boolean(isProposer ? data.proposerStandin : data.opponentStandin);
+        const oppStandin = Boolean(isProposer ? data.opponentStandin : data.proposerStandin);
+
+        activeProposals.push({
+            proposalId: id,
+            opponentTag: String(isProposer ? (data.opponentTeamTag ?? '?') : (data.proposerTeamTag ?? '?')),
+            opponentName: String(isProposer ? (data.opponentTeamName ?? '') : (data.proposerTeamName ?? '')),
+            gameType: (data.gameType as 'official' | 'practice') ?? 'practice',
+            viableSlots: computeViableSlots(teamAvail, oppAvail, ourMin, oppMin, ourStandin, oppStandin),
+            opponentLogoUrl: opponentLogoMap.get(oppId) ?? null,
+        });
+    }
+
+    state.activeProposals = activeProposals;
+
+    if (activeProposals.length !== prevCount) {
+        scheduleRender(teamId);
+    }
+}
+
+/** Count slots where both teams meet the minimum player threshold. */
+function computeViableSlots(
+    teamAvail: AvailabilityData | null,
+    oppAvail: AvailabilityData | null,
+    ourMin: number,
+    oppMin: number,
+    ourStandin: boolean,
+    oppStandin: boolean,
+): number {
+    const teamSlots = teamAvail?.slots ?? {};
+    const oppSlots = oppAvail?.slots ?? {};
+    const allSlotIds = new Set([...Object.keys(teamSlots), ...Object.keys(oppSlots)]);
+
+    let viable = 0;
+    for (const slotId of allSlotIds) {
+        const ourPlayers = teamSlots[slotId] ?? [];
+        const oppPlayers = oppSlots[slotId] ?? [];
+        const effectiveOur = Math.min(4, ourPlayers.length + (ourStandin ? 1 : 0));
+        const effectiveOpp = Math.min(4, oppPlayers.length + (oppStandin ? 1 : 0));
+        if (effectiveOur >= ourMin && effectiveOpp >= oppMin) viable++;
+    }
+    return viable;
 }
 
 // ── Debounced rendering ──────────────────────────────────────────────────────
@@ -409,17 +609,18 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
     }
 
-    // If next week grid was reposted, current week grid + cards are now above it — repost all
+    // If next week grid was reposted, current week grid + cards + event message are now above it — repost all
     if (nextWeekReposted) {
-        // Delete existing current week message + all cards
         await deleteMessages(botClient, state.channelId, [
             ...(state.messageId ? [state.messageId] : []),
             ...state.matchMessageIds,
             ...state.proposalMessageIds,
+            ...(state.eventMessageId ? [state.eventMessageId] : []),
         ]);
         state.messageId = null;
         state.matchMessageIds = [];
         state.proposalMessageIds = [];
+        state.eventMessageId = null;
     }
 
     // ── Post/update current week grid message ──
@@ -449,17 +650,20 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
     }
 
-    // If current week grid was reposted, cards are now above it — delete them
+    // If current week grid was reposted, cards + event message are now above it — delete them
     if (currentWeekReposted && !nextWeekReposted) {
         await deleteMessages(botClient, state.channelId, [
             ...state.matchMessageIds,
             ...state.proposalMessageIds,
+            ...(state.eventMessageId ? [state.eventMessageId] : []),
         ]);
         state.matchMessageIds = [];
         state.proposalMessageIds = [];
+        state.eventMessageId = null;
         await firestoreDb.collection('botRegistrations').doc(teamId).update({
             matchMessageIds: [],
             proposalMessageIds: [],
+            eventMessageId: null,
         });
     }
 
@@ -470,6 +674,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             scheduleMessageId: state.messageId,
             matchMessageIds: state.matchMessageIds,
             proposalMessageIds: state.proposalMessageIds,
+            eventMessageId: state.eventMessageId,
         });
     }
 
@@ -480,8 +685,12 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         const matchCards: Array<{ buffer: Buffer; button: ReturnType<typeof buildMatchButton> }> = [];
         const proposalCards: Array<{ buffer: Buffer; button: ReturnType<typeof buildProposalButton> }> = [];
 
+        // Fetch own logo once — used for both match cards and proposal cards
+        const ownLogo = state.teamInfo
+            ? await getTeamLogo(teamId, state.teamInfo.logoUrl)
+            : null;
+
         if (allMatches.length > 0 && state.teamInfo) {
-            const ownLogo = await getTeamLogo(teamId, state.teamInfo.logoUrl);
             for (const match of allMatches) {
                 const opponentLogo = await getTeamLogo(match.opponentId, match.opponentLogoUrl);
                 matchCards.push({
@@ -499,16 +708,19 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             }
         }
 
-        if (state.activeProposals.length > 0) {
+        if (state.activeProposals.length > 0 && state.teamInfo) {
             for (const proposal of state.activeProposals) {
                 const opponentLogo = proposal.opponentLogoUrl
                     ? await getTeamLogo(proposal.opponentTag, proposal.opponentLogoUrl)
                     : null;
                 proposalCards.push({
                     buffer: await renderProposalCard({
+                        ownTag: state.teamInfo.teamTag,
+                        ownLogo,
                         opponentName: proposal.opponentName,
                         opponentTag: proposal.opponentTag,
                         opponentLogo,
+                        gameType: proposal.gameType,
                         viableSlots: proposal.viableSlots,
                     }),
                     button: buildProposalButton(proposal),
@@ -516,22 +728,22 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             }
         }
 
-        // Detect if counts changed — if so, wipe everything and repost in order
-        const countsChanged =
-            matchCards.length !== state.matchMessageIds.length ||
-            proposalCards.length !== state.proposalMessageIds.length;
+        // If match count increased, new match messages would appear after existing
+        // proposal messages, breaking the intended order (matches above proposals).
+        // Wipe all cards and repost in correct order only in that case.
+        const matchCountIncreased = matchCards.length > state.matchMessageIds.length;
 
-        if (countsChanged) {
+        if (matchCountIncreased) {
             // Delete all existing card messages
             await deleteMessages(botClient, state.channelId, state.matchMessageIds);
             await deleteMessages(botClient, state.channelId, state.proposalMessageIds);
 
             // Post fresh: matches first, then proposals (correct channel order)
             const newMatchIds = await syncCardMessages(
-                botClient, state.channelId, [], matchCards,
+                botClient, state.channelId, [], matchCards, state.teamId,
             );
             const newProposalIds = await syncCardMessages(
-                botClient, state.channelId, [], proposalCards,
+                botClient, state.channelId, [], proposalCards, state.teamId,
             );
 
             state.matchMessageIds = newMatchIds;
@@ -541,9 +753,9 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                 proposalMessageIds: newProposalIds,
             });
         } else {
-            // Counts unchanged — edit in place (no reordering needed)
+            // Edit in place, delete excess — syncCardMessages handles all of this
             const newMatchIds = await syncCardMessages(
-                botClient, state.channelId, state.matchMessageIds, matchCards,
+                botClient, state.channelId, state.matchMessageIds, matchCards, state.teamId,
             );
             if (!arraysEqual(newMatchIds, state.matchMessageIds)) {
                 state.matchMessageIds = newMatchIds;
@@ -553,7 +765,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             }
 
             const newProposalIds = await syncCardMessages(
-                botClient, state.channelId, state.proposalMessageIds, proposalCards,
+                botClient, state.channelId, state.proposalMessageIds, proposalCards, state.teamId,
             );
             if (!arraysEqual(newProposalIds, state.proposalMessageIds)) {
                 state.proposalMessageIds = newProposalIds;
@@ -564,6 +776,77 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         }
     } catch (err) {
         logger.error('Failed to sync card messages', {
+            teamId, error: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    // ── Event message — rolling "last 3 events" at bottom of #schedule ──
+    // Delete + repost (not edit) so Discord fires an unread notification.
+    const MAX_RECENT_EVENTS = 3;
+    try {
+        const currentProposalIds = new Set(state.activeProposals.map(p => p.proposalId));
+        const allMatches = [...state.scheduledMatches, ...state.nextWeekMatches];
+        const currentMatchKeys = new Set(allMatches.map(m => `${m.slotId}:${m.opponentId}`));
+
+        if (state.isInitialRender) {
+            // First render — populate prev state without posting event message
+            state.prevProposalIds = currentProposalIds;
+            state.prevMatchKeys = currentMatchKeys;
+            state.isInitialRender = false;
+        } else {
+            const newProposals = [...currentProposalIds].filter(id => !state.prevProposalIds.has(id));
+            const newMatches = [...currentMatchKeys].filter(k => !state.prevMatchKeys.has(k));
+
+            // Collect new event lines (matches first, then proposals)
+            const newEventLines: string[] = [];
+
+            for (const matchKey of newMatches) {
+                const match = allMatches.find(m => `${m.slotId}:${m.opponentId}` === matchKey);
+                if (match && state.teamInfo) {
+                    newEventLines.push(`\u{1F4C5} Match scheduled: ${state.teamInfo.teamTag} vs ${match.opponentTag} ${match.opponentName} \u2014 ${match.scheduledDate}`);
+                }
+            }
+            for (const proposalId of newProposals) {
+                const proposal = state.activeProposals.find(p => p.proposalId === proposalId);
+                if (proposal) {
+                    const typeLabel = proposal.gameType === 'official' ? 'Official' : 'Practice';
+                    newEventLines.push(`\u{1F4E9} New challenge from ${proposal.opponentTag} ${proposal.opponentName} \u2014 ${typeLabel}`);
+                }
+            }
+
+            if (newEventLines.length > 0) {
+                // Prepend new events (newest first), keep max 3 total
+                state.recentEvents = [...newEventLines, ...state.recentEvents].slice(0, MAX_RECENT_EVENTS);
+
+                // Delete old event message
+                if (state.eventMessageId) {
+                    await deleteMessages(botClient, state.channelId, [state.eventMessageId]);
+                    state.eventMessageId = null;
+                }
+                // Post new event message (plain text, triggers Discord unread)
+                const messageText = state.recentEvents.join('\n');
+                try {
+                    const channel = await botClient.channels.fetch(state.channelId);
+                    if (channel && channel.isTextBased()) {
+                        const msg = await (channel as TextChannel).send(messageText);
+                        state.eventMessageId = msg.id;
+                        logger.info('Posted event message', { teamId, events: state.recentEvents.length });
+                    }
+                } catch (err) {
+                    logger.warn('Failed to post event message', {
+                        teamId, error: err instanceof Error ? err.message : String(err),
+                    });
+                }
+                await firestoreDb.collection('botRegistrations').doc(teamId).update({
+                    eventMessageId: state.eventMessageId,
+                });
+            }
+
+            state.prevProposalIds = currentProposalIds;
+            state.prevMatchKeys = currentMatchKeys;
+        }
+    } catch (err) {
+        logger.warn('Failed to handle event message', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
@@ -614,9 +897,8 @@ async function fetchTeamInfo(teamId: string): Promise<TeamInfo | null> {
 }
 
 /**
- * Poll scheduled matches and active proposals for a team.
- * Fetches enriched data including gameType, names, and opponent logo URLs.
- * Queries both current and next week.
+ * Poll scheduled matches for a team (current week + next week).
+ * Proposals are handled separately via subscribeProposals (real-time).
  */
 async function pollScheduledMatches(teamId: string): Promise<void> {
     const state = activeTeams.get(teamId);
@@ -646,12 +928,8 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
         ]);
 
         const prevMatchCount = state.scheduledMatches.length + state.nextWeekMatches.length;
-        const prevProposalCount = state.activeProposals.length;
-
-        // Collect opponent teamIds for logo fetching
         const opponentTeamIds = new Set<string>();
 
-        // Build enriched match lists
         function buildMatchList(
             snap: FirebaseFirestore.QuerySnapshot,
             weekId: string,
@@ -681,87 +959,21 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
         const scheduledMatches = buildMatchList(currentMatchesSnap, state.weekId);
         const nextWeekMatches = buildMatchList(nextMatchesSnap, state.nextWeekId);
 
-        // Active proposals (Firestore doesn't support OR across fields, two queries)
-        const [proposerSnap, opponentSnap] = await Promise.all([
-            firestoreDb.collection('matchProposals')
-                .where('proposerTeamId', '==', teamId)
-                .where('status', '==', 'active')
-                .get(),
-            firestoreDb.collection('matchProposals')
-                .where('opponentTeamId', '==', teamId)
-                .where('status', '==', 'active')
-                .get(),
-        ]);
-
-        const seenIds = new Set<string>();
-        const activeProposals: ActiveProposalDisplay[] = [];
-
-        for (const snap of [proposerSnap, opponentSnap]) {
-            for (const doc of snap.docs) {
-                if (seenIds.has(doc.id)) continue;
-                seenIds.add(doc.id);
-
-                const data = doc.data();
-                const isProposer = data.proposerTeamId === teamId;
-                const oppId = isProposer ? String(data.opponentTeamId ?? '') : String(data.proposerTeamId ?? '');
-                if (oppId) opponentTeamIds.add(oppId);
-
-                activeProposals.push({
-                    proposalId: doc.id,
-                    opponentTag: isProposer
-                        ? String(data.opponentTeamTag ?? '?')
-                        : String(data.proposerTeamTag ?? '?'),
-                    opponentName: isProposer
-                        ? String(data.opponentTeamName ?? '')
-                        : String(data.proposerTeamName ?? ''),
-                    viableSlots: Array.isArray(data.confirmedSlots) ? data.confirmedSlots.length : 0,
-                    opponentLogoUrl: null,
-                });
-            }
-        }
-
-        // Batch-fetch opponent team docs for logo URLs
+        // Batch-fetch opponent logos
         if (opponentTeamIds.size > 0) {
             const teamDocs = await Promise.all(
                 [...opponentTeamIds].map(id => firestoreDb!.collection('teams').doc(id).get()),
             );
             const logoUrls = new Map<string, string | null>();
             for (const doc of teamDocs) {
-                if (doc.exists) {
-                    logoUrls.set(doc.id, doc.data()!.activeLogo?.urls?.small ?? null);
-                }
+                if (doc.exists) logoUrls.set(doc.id, doc.data()!.activeLogo?.urls?.small ?? null);
             }
-
-            // Fill logo URLs on matches (both weeks)
             for (const m of [...scheduledMatches, ...nextWeekMatches]) {
                 m.opponentLogoUrl = logoUrls.get(m.opponentId) ?? null;
             }
-
-            // Fill logo URLs on proposals
-            const tagToId = new Map<string, string>();
-            for (const snap of [currentMatchesSnap, nextMatchesSnap]) {
-                for (const doc of snap.docs) {
-                    const d = doc.data();
-                    if (d.teamAId !== teamId) tagToId.set(String(d.teamATag ?? ''), String(d.teamAId));
-                    if (d.teamBId !== teamId) tagToId.set(String(d.teamBTag ?? ''), String(d.teamBId));
-                }
-            }
-            for (const snap of [proposerSnap, opponentSnap]) {
-                for (const doc of snap.docs) {
-                    const d = doc.data();
-                    const isProposer = d.proposerTeamId === teamId;
-                    const oppId = isProposer ? String(d.opponentTeamId ?? '') : String(d.proposerTeamId ?? '');
-                    const oppTag = isProposer ? String(d.opponentTeamTag ?? '') : String(d.proposerTeamTag ?? '');
-                    if (oppId) tagToId.set(oppTag, oppId);
-                }
-            }
-            for (const p of activeProposals) {
-                const oppId = tagToId.get(p.opponentTag);
-                if (oppId) p.opponentLogoUrl = logoUrls.get(oppId) ?? null;
-            }
         }
 
-        // Sort matches chronologically
+        // Sort chronologically
         const dayOrder: Record<string, number> = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
         const sortMatches = (list: ScheduledMatchDisplay[]) => {
             list.sort((a, b) => {
@@ -776,15 +988,40 @@ async function pollScheduledMatches(teamId: string): Promise<void> {
 
         state.scheduledMatches = scheduledMatches;
         state.nextWeekMatches = nextWeekMatches;
-        state.activeProposals = activeProposals;
 
-        // Trigger re-render if matches or proposals changed
         const newMatchCount = scheduledMatches.length + nextWeekMatches.length;
-        if (newMatchCount !== prevMatchCount || activeProposals.length !== prevProposalCount) {
+        if (newMatchCount !== prevMatchCount) {
             scheduleRender(teamId);
         }
+
+        // Proposals keepalive — Firestore onSnapshot listeners can silently die after
+        // prolonged idle. Do a one-shot query every poll cycle to catch missed updates.
+        const [proposerSnap, opponentSnap] = await Promise.all([
+            firestoreDb.collection('matchProposals')
+                .where('proposerTeamId', '==', teamId)
+                .where('status', '==', 'active')
+                .get(),
+            firestoreDb.collection('matchProposals')
+                .where('opponentTeamId', '==', teamId)
+                .where('status', '==', 'active')
+                .get(),
+        ]);
+        const polledIds = new Set<string>();
+        for (const doc of [...proposerSnap.docs, ...opponentSnap.docs]) polledIds.add(doc.id);
+        const subscribedIds = new Set(state.activeProposals.map(p => p.proposalId));
+        // Check if the subscription state is stale
+        const hasMissing = [...polledIds].some(id => !subscribedIds.has(id));
+        const hasExtra = [...subscribedIds].some(id => !polledIds.has(id));
+        if (hasMissing || hasExtra) {
+            logger.warn('Proposal subscription appears stale, forcing refresh', {
+                teamId, polled: polledIds.size, subscribed: subscribedIds.size,
+            });
+            // Restart the proposal subscription
+            state.proposalUnsub();
+            state.proposalUnsub = subscribeProposals(teamId);
+        }
     } catch (err) {
-        logger.warn('Failed to poll scheduled matches/proposals', {
+        logger.warn('Failed to poll scheduled matches', {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }

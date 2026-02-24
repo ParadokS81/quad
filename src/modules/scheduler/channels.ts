@@ -50,38 +50,10 @@ export async function syncAllGuildChannels(db: Firestore, client: Client): Promi
 
     try {
       const channels = await getTextChannels(client, data.guildId);
-      const update: Record<string, unknown> = {
+      await doc.ref.update({
         availableChannels: channels,
         updatedAt: new Date(),
-      };
-
-      // Backfill default notification channel for existing registrations that don't have one
-      if (!data.notificationChannelId) {
-        const guild = await client.guilds.fetch(data.guildId);
-        const systemChannelId = guild.systemChannel?.id;
-        let defaultId: string | null = null;
-
-        if (systemChannelId) {
-          const match = channels.find(ch => ch.id === systemChannelId);
-          if (match?.canPost) defaultId = systemChannelId;
-        }
-        if (!defaultId) {
-          const firstPostable = channels.find(ch => ch.canPost);
-          if (firstPostable) defaultId = firstPostable.id;
-        }
-
-        if (defaultId) {
-          update.notificationChannelId = defaultId;
-          update.notificationsEnabled = true;
-          logger.info('Set default notification channel for guild', {
-            guildId: data.guildId,
-            teamId: data.teamId,
-            channelId: defaultId,
-          });
-        }
-      }
-
-      await doc.ref.update(update);
+      });
       logger.debug('Synced channels for guild', {
         guildId: data.guildId,
         teamId: data.teamId,
@@ -98,6 +70,7 @@ export async function syncAllGuildChannels(db: Firestore, client: Client): Promi
 
 /**
  * Sync channels for a single guild. Used when a registration is activated.
+ * Updates ALL active registrations for the guild (multi-team support).
  */
 export async function syncGuildChannels(
   db: Firestore,
@@ -107,27 +80,28 @@ export async function syncGuildChannels(
   const snapshot = await db.collection('botRegistrations')
     .where('guildId', '==', guildId)
     .where('status', '==', 'active')
-    .limit(1)
     .get();
 
   if (snapshot.empty) return;
 
-  const doc = snapshot.docs[0];
-  try {
-    const channels = await getTextChannels(client, guildId);
-    await doc.ref.update({
-      availableChannels: channels,
-      updatedAt: new Date(),
-    });
-    logger.info('Synced channels for newly registered guild', {
-      guildId,
-      teamId: doc.data().teamId,
-      channelCount: channels.length,
-    });
-  } catch (err) {
-    logger.warn('Failed to sync channels for guild', {
-      guildId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+  const channels = await getTextChannels(client, guildId);
+  for (const doc of snapshot.docs) {
+    try {
+      await doc.ref.update({
+        availableChannels: channels,
+        updatedAt: new Date(),
+      });
+      logger.info('Synced channels for newly registered guild', {
+        guildId,
+        teamId: doc.data().teamId,
+        channelCount: channels.length,
+      });
+    } catch (err) {
+      logger.warn('Failed to sync channels for registration', {
+        guildId,
+        teamId: doc.data().teamId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }

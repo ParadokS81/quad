@@ -1,10 +1,10 @@
 /**
  * Firestore listener — watches `notifications` collection for all pending notifications.
  *
- * Handles three types:
- * - challenge_proposed: Opponent channel (or DM fallback) + proposer channel
- * - slot_confirmed: The OTHER side's channel (or DM fallback)
- * - match_sealed: Recipient team's channel only
+ * Notification delivery has been replaced by the availability module's "last event"
+ * message in #schedule. This listener now marks notifications as delivered without
+ * sending Discord messages. The proposal_cancelled handler still cleans up OLD
+ * embed messages from before this migration.
  *
  * Writes delivery status back to Firestore.
  */
@@ -12,16 +12,18 @@
 import { type Client, type TextChannel } from 'discord.js';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
-import { type ChallengeNotification, type SlotConfirmedNotification, type MatchSealedNotification } from './types.js';
-import { buildChallengeEmbed, buildProposerEmbed, buildSlotConfirmedEmbed, buildMatchSealedEmbed } from './embeds.js';
+import { type ChallengeNotification, type SlotConfirmedNotification, type MatchSealedNotification, type ProposalCancelledNotification } from './types.js';
 
 let unsubscribe: (() => void) | null = null;
+
+let firestoreDb: Firestore | null = null;
 
 /**
  * Start listening for all pending notifications.
  * Called from module onReady.
  */
 export function startListening(db: Firestore, client: Client): void {
+  firestoreDb = db;
   // No type filter — handle all notification types
   const query = db.collection('notifications')
     .where('status', '==', 'pending');
@@ -81,6 +83,9 @@ async function handleNotification(
     case 'match_sealed':
       await handleMatchSealed(client, doc, data as MatchSealedNotification);
       break;
+    case 'proposal_cancelled':
+      await handleProposalCancelled(client, doc, data as ProposalCancelledNotification);
+      break;
     default:
       logger.warn('Unknown notification type', { type, id: doc.id });
       // Mark as delivered so we don't loop on it
@@ -89,10 +94,11 @@ async function handleNotification(
 }
 
 /**
- * challenge_proposed — two-target delivery: opponent channel (or DM) + proposer channel.
+ * challenge_proposed — mark as delivered without sending Discord messages.
+ * The availability module's "last event" message in #schedule handles notifications.
  */
 async function handleChallengeProposed(
-  client: Client,
+  _client: Client,
   doc: FirebaseFirestore.QueryDocumentSnapshot,
   data: ChallengeNotification,
 ): Promise<void> {
@@ -103,218 +109,134 @@ async function handleChallengeProposed(
     proposer: `${data.proposerTeamTag} ${data.proposerTeamName}`,
     opponent: `${data.opponentTeamTag} ${data.opponentTeamName}`,
     gameType: data.gameType,
-    slots: data.confirmedSlots.length,
   });
 
-  let opponentChannelSent = false;
-  let opponentDmSent = false;
-  let proposerChannelSent = false;
-  let error: string | undefined;
-
-  // 1. Deliver to opponent
-  const opp = data.delivery.opponent;
-
-  if (opp.botRegistered && opp.notificationsEnabled && opp.channelId) {
-    try {
-      const channel = await client.channels.fetch(opp.channelId);
-      if (channel && channel.isTextBased()) {
-        const { embed, row } = buildChallengeEmbed(data);
-        await (channel as TextChannel).send({ embeds: [embed], components: [row] });
-        opponentChannelSent = true;
-        logger.info('Challenge embed sent to opponent channel', { notificationId, channelId: opp.channelId });
-      } else {
-        logger.warn('Opponent channel not found or not text-based', { notificationId, channelId: opp.channelId });
-      }
-    } catch (err) {
-      logger.warn('Failed to send to opponent channel, trying DM fallback', {
-        notificationId,
-        channelId: opp.channelId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // DM fallback
-  if (!opponentChannelSent && opp.leaderDiscordId) {
-    try {
-      const user = await client.users.fetch(opp.leaderDiscordId);
-      const { embed, row } = buildChallengeEmbed(data);
-      await user.send({ embeds: [embed], components: [row] });
-      opponentDmSent = true;
-      logger.info('Challenge embed sent via DM to opponent leader', { notificationId, leaderDiscordId: opp.leaderDiscordId });
-    } catch (err) {
-      logger.warn('Failed to DM opponent leader', {
-        notificationId,
-        leaderDiscordId: opp.leaderDiscordId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  if (!opponentChannelSent && !opponentDmSent) {
-    logger.warn('No delivery possible for opponent', {
-      notificationId,
-      botRegistered: opp.botRegistered,
-      notificationsEnabled: opp.notificationsEnabled,
-      hasChannel: !!opp.channelId,
-      hasLeader: !!opp.leaderDiscordId,
-    });
-  }
-
-  // 2. Deliver to proposer's channel
-  const prop = data.delivery.proposer;
-
-  if (prop.botRegistered && prop.notificationsEnabled && prop.channelId) {
-    try {
-      const channel = await client.channels.fetch(prop.channelId);
-      if (channel && channel.isTextBased()) {
-        const { embed, row } = buildProposerEmbed(data);
-        await (channel as TextChannel).send({ embeds: [embed], components: [row] });
-        proposerChannelSent = true;
-        logger.info('Proposer confirmation embed sent', { notificationId, channelId: prop.channelId });
-      }
-    } catch (err) {
-      logger.warn('Failed to send to proposer channel', {
-        notificationId,
-        channelId: prop.channelId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  const allFailed = !opponentChannelSent && !opponentDmSent && !proposerChannelSent;
-  if (allFailed) error = 'All delivery attempts failed';
-
   await doc.ref.update({
-    status: allFailed ? 'failed' : 'delivered',
+    status: 'delivered',
     deliveredAt: FieldValue.serverTimestamp(),
     deliveryResult: {
-      opponentChannelSent,
-      opponentDmSent,
-      proposerChannelSent,
-      ...(error ? { error } : {}),
+      opponentChannelSent: false,
+      opponentDmSent: false,
+      proposerChannelSent: false,
+      note: 'Replaced by schedule channel event message',
     },
   });
 
-  logger.info('challenge_proposed processed', {
-    notificationId,
-    status: allFailed ? 'failed' : 'delivered',
-    opponentChannelSent,
-    opponentDmSent,
-    proposerChannelSent,
-  });
+  logger.info('challenge_proposed marked delivered', { notificationId });
 }
 
 /**
- * slot_confirmed — single-target: send to the team that did NOT confirm.
+ * slot_confirmed — mark as delivered without sending Discord messages.
+ * Intermediate slot confirmations are no longer announced — only the final
+ * match_sealed event matters, shown via the availability module's match cards.
  */
 async function handleSlotConfirmed(
-  client: Client,
+  _client: Client,
   doc: FirebaseFirestore.QueryDocumentSnapshot,
   data: SlotConfirmedNotification,
 ): Promise<void> {
   const notificationId = doc.id;
-  const delivery = data.delivery;
 
   logger.info('Processing slot_confirmed notification', {
     notificationId,
     confirmedBy: `${data.confirmedByTeamTag} ${data.confirmedByTeamName}`,
-    recipient: `${data.recipientTeamTag} ${data.recipientTeamName}`,
     slotId: data.slotId,
   });
 
-  let channelSent = false;
-  let dmSent = false;
-
-  if (delivery.botRegistered && delivery.notificationsEnabled && delivery.channelId) {
-    try {
-      const channel = await client.channels.fetch(delivery.channelId);
-      if (channel && channel.isTextBased()) {
-        const { embed, row } = buildSlotConfirmedEmbed(data);
-        await (channel as TextChannel).send({ embeds: [embed], components: [row] });
-        channelSent = true;
-        logger.info('Slot confirmed embed sent to channel', { notificationId, channelId: delivery.channelId });
-      }
-    } catch (err) {
-      logger.warn('Failed to send slot_confirmed to channel, trying DM fallback', {
-        notificationId,
-        channelId: delivery.channelId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // DM fallback
-  if (!channelSent && delivery.leaderDiscordId) {
-    try {
-      const user = await client.users.fetch(delivery.leaderDiscordId);
-      const { embed, row } = buildSlotConfirmedEmbed(data);
-      await user.send({ embeds: [embed], components: [row] });
-      dmSent = true;
-      logger.info('Slot confirmed embed sent via DM', { notificationId, leaderDiscordId: delivery.leaderDiscordId });
-    } catch (err) {
-      logger.warn('Failed to DM recipient leader for slot_confirmed', {
-        notificationId,
-        leaderDiscordId: delivery.leaderDiscordId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
   await doc.ref.update({
-    status: (!channelSent && !dmSent) ? 'failed' : 'delivered',
+    status: 'delivered',
     deliveredAt: FieldValue.serverTimestamp(),
-    deliveryResult: { channelSent, dmSent },
+    deliveryResult: { channelSent: false, dmSent: false, note: 'Replaced by schedule channel event message' },
   });
 
-  logger.info('slot_confirmed processed', { notificationId, status: (!channelSent && !dmSent) ? 'failed' : 'delivered', channelSent, dmSent });
+  logger.info('slot_confirmed marked delivered', { notificationId });
 }
 
 /**
- * match_sealed — single-target: send to the recipient team's channel only (no DM fallback).
- * MatchScheduler writes two docs — one per team — so each team gets their own notification.
+ * match_sealed — mark as delivered without sending Discord messages.
+ * The availability module shows match cards in #schedule and posts an event message.
  */
 async function handleMatchSealed(
-  client: Client,
+  _client: Client,
   doc: FirebaseFirestore.QueryDocumentSnapshot,
   data: MatchSealedNotification,
 ): Promise<void> {
   const notificationId = doc.id;
-  const delivery = data.delivery;
 
   logger.info('Processing match_sealed notification', {
     notificationId,
     proposer: `${data.proposerTeamTag} ${data.proposerTeamName}`,
     opponent: `${data.opponentTeamTag} ${data.opponentTeamName}`,
-    recipient: `${data.recipientTeamTag} ${data.recipientTeamName}`,
     slotId: data.slotId,
   });
 
-  let channelSent = false;
+  await doc.ref.update({
+    status: 'delivered',
+    deliveredAt: FieldValue.serverTimestamp(),
+    deliveryResult: { channelSent: false, note: 'Replaced by schedule channel event message' },
+  });
 
-  if (delivery.botRegistered && delivery.notificationsEnabled && delivery.channelId) {
+  logger.info('match_sealed marked delivered', { notificationId });
+}
+
+/**
+ * proposal_cancelled — find the original challenge_proposed notification and delete
+ * the Discord messages that were sent to the announcement channels of both teams.
+ */
+async function handleProposalCancelled(
+  client: Client,
+  doc: FirebaseFirestore.QueryDocumentSnapshot,
+  data: ProposalCancelledNotification,
+): Promise<void> {
+  const notificationId = doc.id;
+  const { proposalId } = data;
+
+  logger.info('Processing proposal_cancelled notification', { notificationId, proposalId });
+
+  if (!firestoreDb) {
+    await doc.ref.update({ status: 'failed', deliveredAt: FieldValue.serverTimestamp() });
+    return;
+  }
+
+  // Find the original challenge_proposed notification to get the stored message IDs
+  const snap = await firestoreDb.collection('notifications')
+    .where('proposalId', '==', proposalId)
+    .get();
+
+  const challengeDoc = snap.docs.find(d => d.data().type === 'challenge_proposed');
+  if (!challengeDoc) {
+    logger.warn('No challenge_proposed notification found for cancelled proposal', { proposalId });
+    await doc.ref.update({ status: 'delivered', deliveredAt: FieldValue.serverTimestamp() });
+    return;
+  }
+
+  const result = challengeDoc.data().deliveryResult ?? {};
+  const targets: Array<[string | null, string | null]> = [
+    [result.opponentMessageId, result.opponentMessageChannelId],
+    [result.proposerMessageId, result.proposerMessageChannelId],
+  ];
+
+  let deletedCount = 0;
+  for (const [messageId, channelId] of targets) {
+    if (!messageId || !channelId) continue;
     try {
-      const channel = await client.channels.fetch(delivery.channelId);
+      const channel = await client.channels.fetch(channelId);
       if (channel && channel.isTextBased()) {
-        const { embed, row } = buildMatchSealedEmbed(data);
-        await (channel as TextChannel).send({ embeds: [embed], components: [row] });
-        channelSent = true;
-        logger.info('Match sealed embed sent', { notificationId, channelId: delivery.channelId });
+        const msg = await (channel as TextChannel).messages.fetch(messageId);
+        await msg.delete();
+        deletedCount++;
+        logger.info('Deleted proposal announcement message', { notificationId, channelId, messageId });
       }
-    } catch (err) {
-      logger.warn('Failed to send match_sealed embed', {
-        notificationId,
-        channelId: delivery.channelId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+    } catch {
+      // Message already deleted or channel gone — that's fine
     }
   }
 
   await doc.ref.update({
-    status: !channelSent ? 'failed' : 'delivered',
+    status: 'delivered',
     deliveredAt: FieldValue.serverTimestamp(),
-    deliveryResult: { channelSent },
+    deliveryResult: { deletedCount },
   });
 
-  logger.info('match_sealed processed', { notificationId, status: !channelSent ? 'failed' : 'delivered', channelSent });
+  logger.info('proposal_cancelled processed', { notificationId, proposalId, deletedCount });
 }

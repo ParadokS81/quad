@@ -114,26 +114,51 @@ async function handleCreateChannelRequest(
       }
     }
 
-    // Create a text channel: everyone can read, only bot can write
+    // Create a text channel: everyone can read, only bot can write.
+    // We build permission overwrites that deny SendMessages for @everyone
+    // AND for any role that has SendMessages allowed in the parent category,
+    // so category-level role overrides don't leak through.
+    const denyMessagesPerms = [PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.CreatePrivateThreads];
+    const permissionOverwrites: Array<{ id: string; deny?: bigint[]; allow?: bigint[] }> = [
+      {
+        id: guild.roles.everyone.id,
+        deny: denyMessagesPerms,
+        allow: [PermissionFlagsBits.ViewChannel],
+      },
+      {
+        id: me.id,
+        allow: [
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.EmbedLinks,
+          PermissionFlagsBits.AttachFiles,
+        ],
+      },
+    ];
+
+    // If placing under a category, check for roles that have SendMessages
+    // allowed at the category level — we must explicitly deny them on the
+    // channel, otherwise they override the @everyone deny.
+    if (bestParent) {
+      const parentChannel = channels.get(bestParent);
+      if (parentChannel && 'permissionOverwrites' in parentChannel) {
+        for (const [overwriteId, overwrite] of parentChannel.permissionOverwrites.cache) {
+          // Skip @everyone (already handled) and the bot itself
+          if (overwriteId === guild.roles.everyone.id || overwriteId === me.id) continue;
+          if (overwrite.allow.has(PermissionFlagsBits.SendMessages)) {
+            permissionOverwrites.push({
+              id: overwriteId,
+              deny: denyMessagesPerms,
+            });
+          }
+        }
+      }
+    }
+
     const channel = await guild.channels.create({
       name: channelName,
       type: ChannelType.GuildText,
       parent: bestParent ?? undefined,
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.SendMessages],
-          allow: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: me.id,
-          allow: [
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.EmbedLinks,
-            PermissionFlagsBits.AttachFiles,
-          ],
-        },
-      ],
+      permissionOverwrites,
     });
 
     logger.info('Created schedule channel', {
