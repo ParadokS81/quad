@@ -397,6 +397,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     guildName: interaction.guild.name,
     channelId: voiceChannel.id,
     channelName: voiceChannel.name,
+    sourceTextChannelId: interaction.channelId,
   });
 
   try {

@@ -45,6 +45,7 @@ export interface ActiveProposalDisplay {
     proposalId: string;          // Firestore doc ID for deep-linking
     opponentTag: string;
     opponentName: string;
+    gameType: 'official' | 'practice';
     viableSlots: number;
     opponentLogoUrl: string | null;
 }

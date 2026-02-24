@@ -30,7 +30,7 @@ import type {
 
 import { QWHubClient } from './stages/hub-client.js';
 import { pairMatches, formatPairingSummary } from './stages/match-pairer.js';
-import { getRegistrationForGuild } from '../registration/register.js';
+import { getRegistrationsForGuild, type BotRegistration } from '../registration/register.js';
 import { splitByTimestamps, extractIntermissions } from './stages/audio-splitter.js';
 import { transcribeDirectory } from './stages/transcriber.js';
 import { mergeTranscripts, detectOverlaps, computeStats, formatTimeline } from './stages/timeline-merger.js';
@@ -176,8 +176,17 @@ export async function runFastPipeline(
     // Look up bot registration for team tag + player mapping (before Hub query so we can build dynamic player filter)
     let teamTag = session.team?.tag ?? '';
     let knownPlayers: Record<string, string> = {};
+    let registration: BotRegistration | null = null;
     try {
-      const registration = await getRegistrationForGuild(session.guild.id);
+      const registrations = await getRegistrationsForGuild(session.guild.id);
+      if (registrations.length === 1) {
+        registration = registrations[0];
+      } else if (registrations.length > 1) {
+        const sourceChannel = session.source_text_channel_id;
+        if (sourceChannel) {
+          registration = registrations.find(r => r.registeredChannelId === sourceChannel) || null;
+        }
+      }
       if (registration) {
         teamTag = registration.teamTag || teamTag;
         knownPlayers = registration.knownPlayers || {};
@@ -287,9 +296,8 @@ export async function runFastPipeline(
     if (segments.length > 0) {
       try {
         const { uploadVoiceRecordings } = await import('./stages/voice-uploader.js');
-        const teamTag = session.team?.tag || '';
         const guildId = session.guild.id;
-        const uploadResult = await uploadVoiceRecordings(segments, teamTag, guildId, sessionId);
+        const uploadResult = await uploadVoiceRecordings(segments, teamTag, guildId, sessionId, registration);
         if (uploadResult.uploaded > 0) {
           logger.info('Voice recordings uploaded to Firebase', { ...uploadResult });
 

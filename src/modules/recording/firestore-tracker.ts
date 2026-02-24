@@ -9,7 +9,7 @@
 
 import { FieldValue, type Firestore, type DocumentReference } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
-import { getRegistrationForGuild } from '../registration/register.js';
+import { getRegistrationsForGuild } from '../registration/register.js';
 import { onRecordingStart, onRecordingStop, onParticipantChange } from './commands/record.js';
 import type { RecordingSession } from './session.js';
 
@@ -71,8 +71,13 @@ async function handleSessionStart(session: RecordingSession): Promise<void> {
   // Look up team registration for this guild
   let teamId: string | null = null;
   try {
-    const reg = await getRegistrationForGuild(session.guildId);
-    teamId = reg?.teamId ?? null;
+    const registrations = await getRegistrationsForGuild(session.guildId);
+    if (registrations.length === 1) {
+      teamId = registrations[0].teamId;
+    } else if (registrations.length > 1 && session.sourceTextChannelId) {
+      const match = registrations.find(r => r.registeredChannelId === session.sourceTextChannelId);
+      teamId = match?.teamId ?? null;
+    }
   } catch {
     // Unregistered guild — still track the session
   }

@@ -84,6 +84,8 @@ export async function handleSelectMenu(interaction: StringSelectMenuInteraction)
  * - avail:editDay:{teamId}:next  — next week
  */
 async function handleDaySelect(interaction: StringSelectMenuInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     const parts = interaction.customId.split(':');
     const teamId = parts[2];
     const isNextWeek = parts[3] === 'next';
@@ -96,10 +98,7 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
 
     // Only check past for current week (next week is always fully available)
     if (!isNextWeek && isDayPast(cetDay, weekId)) {
-        await interaction.reply({
-            content: 'This day has already passed.',
-            flags: MessageFlags.Ephemeral,
-        });
+        await interaction.editReply({ content: 'This day has already passed.' });
         return;
     }
 
@@ -115,10 +114,7 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
         }));
 
     if (options.length === 0) {
-        await interaction.reply({
-            content: 'All time slots for this day have passed.',
-            flags: MessageFlags.Ephemeral,
-        });
+        await interaction.editReply({ content: 'All time slots for this day have passed.' });
         return;
     }
 
@@ -132,10 +128,9 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
     const dayLabel = formatDayLabel(cetDay, weekId);
     const weekLabel = isNextWeek ? ' (next week)' : '';
 
-    await interaction.reply({
+    await interaction.editReply({
         content: `**${dayLabel}${weekLabel}**\nSelect which times you're available:`,
         components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
-        flags: MessageFlags.Ephemeral,
     });
 }
 
@@ -146,6 +141,8 @@ async function handleDaySelect(interaction: StringSelectMenuInteraction): Promis
  * CustomId: avail:editSlots:{teamId}:{cetDay}:{weekId}
  */
 async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+    await interaction.deferUpdate();
+
     const parts = interaction.customId.split(':');
     const teamId = parts[2];
     const cetDay = parts[3];
@@ -161,7 +158,7 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
     const toRemove = currentSlots.filter(t => !selectedCetTimes.includes(t));
 
     if (toAdd.length === 0 && toRemove.length === 0) {
-        await interaction.update({ content: 'No changes made.', components: [] });
+        await interaction.editReply({ content: 'No changes made.', components: [] });
         setTimeout(() => { interaction.deleteReply().catch(() => {}); }, 3000);
         return;
     }
@@ -195,7 +192,7 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
             teamId, userId: user.uid,
             error: err instanceof Error ? err.message : String(err),
         });
-        await interaction.update({ content: 'Failed to update — try again.', components: [] });
+        await interaction.editReply({ content: 'Failed to update — try again.', components: [] });
         return;
     }
 
@@ -205,7 +202,7 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
     if (addedStr) summary += `\nAdded: ${addedStr}`;
     if (removedStr) summary += `\nRemoved: ${removedStr}`;
 
-    await interaction.update({ content: summary, components: [] });
+    await interaction.editReply({ content: summary, components: [] });
 
     // Auto-delete confirmation after 5 seconds to keep channel clean
     setTimeout(() => {
@@ -220,6 +217,8 @@ async function handleSlotSelect(interaction: StringSelectMenuInteraction): Promi
 // ── Clear Week Flow ─────────────────────────────────────────────────────────
 
 async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     const parts = interaction.customId.split(':');
     const teamId = parts[2];
     const isNextWeek = parts[3] === 'next';
@@ -234,9 +233,8 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
     const doc = await docRef.get();
 
     if (!doc.exists) {
-        await interaction.reply({
+        await interaction.editReply({
             content: `You have no availability set for ${isNextWeek ? 'next' : 'this'} week.`,
-            flags: MessageFlags.Ephemeral,
         });
         return;
     }
@@ -258,9 +256,8 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
     }
 
     if (Object.keys(updateData).length <= 1) {
-        await interaction.reply({
+        await interaction.editReply({
             content: `You have no availability set for ${isNextWeek ? 'next' : 'this'} week.`,
-            flags: MessageFlags.Ephemeral,
         });
         return;
     }
@@ -272,17 +269,15 @@ async function handleClearWeek(interaction: ButtonInteraction): Promise<void> {
             teamId, userId: user.uid,
             error: err instanceof Error ? err.message : String(err),
         });
-        await interaction.reply({
+        await interaction.editReply({
             content: 'Failed to clear — try again.',
-            flags: MessageFlags.Ephemeral,
         });
         return;
     }
 
     const weekNum = weekId.split('-')[1];
-    await interaction.reply({
+    await interaction.editReply({
         content: `Cleared all your availability for Week ${weekNum}.`,
-        flags: MessageFlags.Ephemeral,
     });
 
     logger.info('Availability cleared via Discord', { teamId, userId: user.uid, weekId });
@@ -361,16 +356,14 @@ async function replyNotLinked(interaction: ButtonInteraction | StringSelectMenuI
         .get();
 
     if (snap.empty) {
-        await interaction.reply({
+        await interaction.editReply({
             content: 'Link your Discord account at **matchscheduler.web.app** first.',
-            flags: MessageFlags.Ephemeral,
         });
     } else {
         const teamDoc = await db.collection('teams').doc(teamId).get();
         const teamName = teamDoc.exists ? teamDoc.data()?.teamName : teamId;
-        await interaction.reply({
+        await interaction.editReply({
             content: `You're not a member of **${teamName}** on MatchScheduler.`,
-            flags: MessageFlags.Ephemeral,
         });
     }
 }

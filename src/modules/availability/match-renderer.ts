@@ -140,47 +140,97 @@ export async function renderMatchCard(input: MatchCardInput): Promise<Buffer> {
 // ── Proposal card ───────────────────────────────────────────────────────────
 
 export interface ProposalCardInput {
-    opponentName: string;        // full clan name
-    opponentTag: string;         // for logo fallback initials
+    ownTag: string;
+    ownLogo: Image | null;
+    opponentName: string;
+    opponentTag: string;
     opponentLogo: Image | null;
+    gameType: 'official' | 'practice';
     viableSlots: number;
 }
 
 /**
  * Render a single proposal card as a standalone PNG.
+ *
+ * Layout mirrors the match card but with viable slot count instead of a date:
+ *   [ownLogo] OFFICIAL   vs   OpponentName [oppLogo]   4 viable slots
+ *   ══════════════════ dimmed accent line ══════════════════════════════
  */
 export async function renderProposalCard(input: ProposalCardInput): Promise<Buffer> {
-    const canvas = createCanvas(W, PROPOSAL_H);
+    const canvas = createCanvas(W, MATCH_H);
     const ctx = canvas.getContext('2d');
 
-    drawRoundedRect(ctx, 0, 0, W, PROPOSAL_H, CARD_RADIUS, PROPOSAL_BG);
+    drawRoundedRect(ctx, 0, 0, W, MATCH_H, CARD_RADIUS, PROPOSAL_BG);
 
-    const centerY = PROPOSAL_H / 2;
+    const badgeColor = input.gameType === 'official' ? COLOR_OFFICIAL : COLOR_PRACTICE;
+    const badgeText = input.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
+    const centerY = (MATCH_H - 2) / 2;
     const pad = 14;
-    let x = pad;
+    const logoGap = 10;
 
-    // Opponent logo
-    drawLogo(ctx, input.opponentLogo, input.opponentTag, x + LOGO_SIZE_SM / 2, centerY, LOGO_SIZE_SM);
-    x += LOGO_SIZE_SM + 10;
+    ctx.textBaseline = 'middle';
 
-    // "vs OpponentName"
+    // ── Measure everything first ──
+
+    // Left group: ownLogo + badge
+    const leftGroupEnd = pad + LOGO_SIZE + logoGap;
     ctx.font = `bold 15px ${FONT}`;
+    const badgeEnd = leftGroupEnd + ctx.measureText(badgeText).width;
+
+    // Right group (from right): viable slots text + oppLogo + oppName
+    const slotsText = input.viableSlots === 1 ? '1 viable slot' : `${input.viableSlots} viable slots`;
+    ctx.font = `13px ${FONT}`;
+    const slotsW = ctx.measureText(slotsText).width;
+    const slotsLeft = W - pad - slotsW;
+
+    const oppLogoRight = slotsLeft - logoGap;
+    const oppLogoLeft = oppLogoRight - LOGO_SIZE;
+
+    ctx.font = `bold 16px ${FONT}`;
+    const maxNameW = oppLogoLeft - logoGap - badgeEnd - 40;
+    const oppName = truncateText(ctx, input.opponentName, maxNameW);
+    const nameLeft = oppLogoLeft - logoGap - ctx.measureText(oppName).width;
+
+    // "vs" centered in gap between badgeEnd and nameLeft
+    ctx.font = `15px ${FONT}`;
+    const vsCenterX = (badgeEnd + nameLeft) / 2;
+
+    // ── Draw everything ──
+
+    // Own logo
+    drawLogo(ctx, input.ownLogo, input.ownTag, pad + LOGO_SIZE / 2, centerY, LOGO_SIZE);
+
+    // Badge
+    ctx.font = `bold 15px ${FONT}`;
+    ctx.fillStyle = badgeColor;
+    ctx.textAlign = 'left';
+    ctx.fillText(badgeText, leftGroupEnd, centerY);
+
+    // "vs"
+    ctx.font = `15px ${FONT}`;
+    ctx.fillStyle = COLORS.textSecondary;
+    ctx.textAlign = 'center';
+    ctx.fillText('vs', vsCenterX, centerY);
+
+    // Opponent name
+    ctx.font = `bold 16px ${FONT}`;
     ctx.fillStyle = COLORS.textPrimary;
     ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`vs ${input.opponentName}`, x, centerY);
-    x += ctx.measureText(`vs ${input.opponentName}`).width;
+    ctx.fillText(oppName, nameLeft, centerY);
 
-    // Separator dot + viable slots
-    const slotsText = input.viableSlots === 1 ? '1 viable slot' : `${input.viableSlots} viable slots`;
-    ctx.font = `14px ${FONT}`;
+    // Opponent logo
+    drawLogo(ctx, input.opponentLogo, input.opponentTag, oppLogoLeft + LOGO_SIZE / 2, centerY, LOGO_SIZE);
+
+    // Viable slots (right-aligned, secondary color)
+    ctx.font = `13px ${FONT}`;
     ctx.fillStyle = COLORS.textSecondary;
-    ctx.fillText(`  \u00b7  ${slotsText}`, x, centerY);
+    ctx.textAlign = 'right';
+    ctx.fillText(slotsText, W - pad, centerY);
 
-    // Subtle left accent bar
-    ctx.fillStyle = COLORS.todayHighlight;
-    ctx.globalAlpha = 0.4;
-    ctx.fillRect(0, 0, 3, PROPOSAL_H);
+    // Bottom accent line — dimmed vs match card to show unconfirmed status
+    ctx.fillStyle = badgeColor;
+    ctx.globalAlpha = 0.25;
+    ctx.fillRect(0, MATCH_H - 2, W, 2);
     ctx.globalAlpha = 1.0;
 
     return canvas.toBuffer('image/png');

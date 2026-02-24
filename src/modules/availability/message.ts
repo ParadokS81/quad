@@ -19,12 +19,14 @@ import {
 } from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
+import { dmRegistrantAboutPermissions } from '../registration/register.js';
 import { getNextWeekId } from './time.js';
 import { buildDaySelectMenu } from './interactions.js';
 
 // Discord API error codes
 const UNKNOWN_CHANNEL = 10003;
 const UNKNOWN_MESSAGE = 10008;
+const MISSING_PERMISSIONS = 50013;
 
 function getDiscordErrorCode(err: unknown): number | undefined {
     return (err as { code?: number }).code;
@@ -70,13 +72,17 @@ export async function postOrRecoverMessage(
         }
         channel = fetched as TextChannel;
     } catch (err) {
-        if (getDiscordErrorCode(err) === UNKNOWN_CHANNEL) {
+        const code = getDiscordErrorCode(err);
+        if (code === UNKNOWN_CHANNEL) {
             logger.warn('Schedule channel deleted, clearing config', { channelId, teamId });
             await db.collection('botRegistrations').doc(teamId).update({
                 scheduleChannelId: null,
                 scheduleMessageId: null,
                 nextWeekMessageId: null,
             });
+        } else if (code === MISSING_PERMISSIONS) {
+            logger.warn('Missing permissions to access schedule channel', { channelId, teamId });
+            await dmRegistrantAboutPermissions(client, teamId, channelId);
         } else {
             logger.error('Failed to fetch schedule channel', {
                 channelId, teamId, error: err instanceof Error ? err.message : String(err),
@@ -118,9 +124,14 @@ export async function postOrRecoverMessage(
         logger.info('Posted new schedule message', { teamId, channelId, messageId: newMessage.id, isNextWeek });
         return newMessage.id;
     } catch (err) {
-        logger.error('Failed to post schedule message', {
-            teamId, channelId, isNextWeek, error: err instanceof Error ? err.message : String(err),
-        });
+        if (getDiscordErrorCode(err) === MISSING_PERMISSIONS) {
+            logger.warn('Missing permissions to post schedule message', { teamId, channelId, isNextWeek });
+            await dmRegistrantAboutPermissions(client, teamId, channelId);
+        } else {
+            logger.error('Failed to post schedule message', {
+                teamId, channelId, isNextWeek, error: err instanceof Error ? err.message : String(err),
+            });
+        }
         return null;
     }
 }
@@ -147,13 +158,17 @@ export async function updateMessage(
         if (!fetched || !fetched.isTextBased()) return null;
         channel = fetched as TextChannel;
     } catch (err) {
-        if (getDiscordErrorCode(err) === UNKNOWN_CHANNEL) {
+        const code = getDiscordErrorCode(err);
+        if (code === UNKNOWN_CHANNEL) {
             logger.warn('Schedule channel deleted during update', { channelId, teamId });
             await db.collection('botRegistrations').doc(teamId).update({
                 scheduleChannelId: null,
                 scheduleMessageId: null,
                 nextWeekMessageId: null,
             });
+        } else if (code === MISSING_PERMISSIONS) {
+            logger.warn('Missing permissions to access schedule channel during update', { channelId, teamId });
+            await dmRegistrantAboutPermissions(client, teamId, channelId);
         } else {
             logger.error('Failed to fetch channel for update', {
                 channelId, teamId, error: err instanceof Error ? err.message : String(err),
@@ -186,6 +201,11 @@ export async function updateMessage(
             });
             return null;
         }
+        if (code === MISSING_PERMISSIONS) {
+            logger.warn('Missing permissions to edit schedule message', { channelId, teamId });
+            await dmRegistrantAboutPermissions(client, teamId, channelId);
+            return null;
+        }
         logger.error('Failed to edit schedule message', {
             teamId, messageId, isNextWeek, error: err instanceof Error ? err.message : String(err),
         });
@@ -207,13 +227,18 @@ export async function syncCardMessages(
     channelId: string,
     existingIds: string[],
     cards: Array<{ buffer: Buffer; button: ActionRowBuilder<ButtonBuilder> }>,
+    teamId?: string,
 ): Promise<string[]> {
     let channel: TextChannel;
     try {
         const fetched = await client.channels.fetch(channelId);
         if (!fetched || !fetched.isTextBased()) return [];
         channel = fetched as TextChannel;
-    } catch {
+    } catch (err) {
+        if (getDiscordErrorCode(err) === MISSING_PERMISSIONS && teamId) {
+            logger.warn('Missing permissions to access channel for card messages', { channelId, teamId });
+            await dmRegistrantAboutPermissions(client, teamId, channelId);
+        }
         return [];
     }
 
@@ -251,8 +276,12 @@ export async function syncCardMessages(
         try {
             const newMsg = await channel.send(payload);
             newIds.push(newMsg.id);
-        } catch {
-            // Failed — skip this card
+        } catch (err) {
+            if (getDiscordErrorCode(err) === MISSING_PERMISSIONS && teamId) {
+                logger.warn('Missing permissions to post card message', { channelId, teamId });
+                await dmRegistrantAboutPermissions(client, teamId, channelId);
+            }
+            // Skip this card regardless
         }
     }
 

@@ -24,11 +24,11 @@ export const availabilityModule: BotModule = {
                         userId: interaction.user.id,
                         error: err instanceof Error ? err.message : String(err),
                     });
-                    if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({
-                            content: 'Something went wrong. Please try again.',
-                            flags: 64,
-                        }).catch(() => {});
+                    const msg = { content: 'Something went wrong. Please try again.' };
+                    if (interaction.deferred || interaction.replied) {
+                        await interaction.editReply(msg).catch(() => {});
+                    } else {
+                        await interaction.reply({ ...msg, flags: 64 }).catch(() => {});
                     }
                 }
                 return;
@@ -42,11 +42,11 @@ export const availabilityModule: BotModule = {
                         userId: interaction.user.id,
                         error: err instanceof Error ? err.message : String(err),
                     });
-                    if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({
-                            content: 'Something went wrong. Please try again.',
-                            flags: 64,
-                        }).catch(() => {});
+                    const msg = { content: 'Something went wrong. Please try again.' };
+                    if (interaction.deferred || interaction.replied) {
+                        await interaction.editReply(msg).catch(() => {});
+                    } else {
+                        await interaction.reply({ ...msg, flags: 64 }).catch(() => {});
                     }
                 }
                 return;

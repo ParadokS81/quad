@@ -4,16 +4,14 @@ import { getDb } from '../standin/firestore.js';
 import { buildGuildMembersCache, GuildMemberEntry } from './register.js';
 import { logger } from '../../core/logger.js';
 
-async function findRegistrationByGuildId(guildId: string) {
+async function findRegistrationsByGuildId(guildId: string) {
   const db = getDb();
   const snap = await db.collection('botRegistrations')
     .where('guildId', '==', guildId)
     .where('status', '==', 'active')
-    .limit(1)
     .get();
 
-  if (snap.empty) return null;
-  return snap.docs[0];
+  return snap.docs;  // Returns array, may be empty
 }
 
 function memberToEntry(member: GuildMember): GuildMemberEntry {
@@ -34,17 +32,21 @@ export function registerGuildSyncEvents(client: Client): void {
     if (member.user.id === client.user?.id) return;
 
     try {
-      const reg = await findRegistrationByGuildId(member.guild.id);
-      if (!reg) return;
+      const regs = await findRegistrationsByGuildId(member.guild.id);
+      if (regs.length === 0) return;
 
-      await reg.ref.update({
-        [`guildMembers.${member.user.id}`]: memberToEntry(member),
-      });
+      const entry = memberToEntry(member);
+      for (const reg of regs) {
+        await reg.ref.update({
+          [`guildMembers.${member.user.id}`]: entry,
+        });
+      }
 
       logger.info('Guild member added to cache', {
         guildId: member.guild.id,
         userId: member.user.id,
         username: member.user.username,
+        registrationsUpdated: regs.length,
       });
     } catch (err) {
       logger.error('Failed to sync guild member add', {
@@ -57,16 +59,19 @@ export function registerGuildSyncEvents(client: Client): void {
 
   client.on(Events.GuildMemberRemove, async (member: GuildMember | PartialGuildMember) => {
     try {
-      const reg = await findRegistrationByGuildId(member.guild.id);
-      if (!reg) return;
+      const regs = await findRegistrationsByGuildId(member.guild.id);
+      if (regs.length === 0) return;
 
-      await reg.ref.update({
-        [`guildMembers.${member.user!.id}`]: FieldValue.delete(),
-      });
+      for (const reg of regs) {
+        await reg.ref.update({
+          [`guildMembers.${member.user!.id}`]: FieldValue.delete(),
+        });
+      }
 
       logger.info('Guild member removed from cache', {
         guildId: member.guild.id,
         userId: member.user!.id,
+        registrationsUpdated: regs.length,
       });
     } catch (err) {
       logger.error('Failed to sync guild member remove', {
@@ -82,6 +87,7 @@ export function registerGuildSyncEvents(client: Client): void {
 
 /**
  * Refresh the guildMembers cache for all active registrations.
+ * Groups by guildId to avoid redundant member fetches for multi-team guilds.
  * Call this on bot startup.
  */
 export async function refreshAllGuildMembers(client: Client): Promise<void> {
@@ -90,15 +96,21 @@ export async function refreshAllGuildMembers(client: Client): Promise<void> {
     .where('status', '==', 'active')
     .get();
 
-  let refreshed = 0;
-
+  // Group by guildId to avoid redundant member fetches for multi-team guilds
+  const byGuild = new Map<string, FirebaseFirestore.QueryDocumentSnapshot[]>();
   for (const reg of regs.docs) {
     const guildId = reg.data().guildId as string | undefined;
     if (!guildId) continue;
+    if (!byGuild.has(guildId)) byGuild.set(guildId, []);
+    byGuild.get(guildId)!.push(reg);
+  }
 
+  let refreshed = 0;
+
+  for (const [guildId, guildRegs] of byGuild) {
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
-      logger.warn('Guild not in cache, skipping refresh', { guildId, teamId: reg.id });
+      logger.warn('Guild not in cache, skipping refresh', { guildId });
       continue;
     }
 
@@ -106,22 +118,23 @@ export async function refreshAllGuildMembers(client: Client): Promise<void> {
       const members = await guild.members.fetch();
       const cache = buildGuildMembersCache(client.user!.id, members);
 
-      await reg.ref.update({ guildMembers: cache });
-      refreshed++;
+      for (const reg of guildRegs) {
+        await reg.ref.update({ guildMembers: cache });
+        refreshed++;
+      }
 
       logger.info('Refreshed guild members cache', {
         guildId,
-        teamId: reg.id,
+        registrations: guildRegs.length,
         memberCount: Object.keys(cache).length,
       });
     } catch (err) {
       logger.error('Failed to refresh guild members', {
         guildId,
-        teamId: reg.id,
         error: String(err),
       });
     }
   }
 
-  logger.info(`Guild member refresh complete: ${refreshed} guilds updated`);
+  logger.info(`Guild member refresh complete: ${refreshed} registrations updated`);
 }

@@ -3,7 +3,7 @@ import { type RecordingSession } from './session.js';
 import { type TrackMetadata } from './track.js';
 import { loadConfig } from '../../core/config.js';
 import { logger } from '../../core/logger.js';
-import { getRegistrationForGuild } from '../registration/register.js';
+import { getRegistrationsForGuild } from '../registration/register.js';
 
 interface SessionMetadata {
   schema_version: number;
@@ -15,6 +15,7 @@ interface SessionMetadata {
   guild: { id: string; name: string };
   channel: { id: string; name: string };
   team?: { tag: string; name: string };
+  source_text_channel_id: string | null;
   tracks: TrackMetadata[];
 }
 
@@ -34,12 +35,17 @@ export async function writeSessionMetadata(
     source_version: '1.0.0',
     guild: { id: session.guildId, name: session.guildName },
     channel: { id: session.channelId, name: session.channelName },
+    source_text_channel_id: session.sourceTextChannelId || null,
     tracks,
   };
 
   // Look up guild registration for team info (falls back to env vars)
   try {
-    const registration = await getRegistrationForGuild(session.guildId);
+    const registrations = await getRegistrationsForGuild(session.guildId);
+    let registration = registrations.length === 1 ? registrations[0] : null;
+    if (!registration && registrations.length > 1 && session.sourceTextChannelId) {
+      registration = registrations.find(r => r.registeredChannelId === session.sourceTextChannelId) || null;
+    }
     if (registration) {
       metadata.team = {
         tag: registration.teamTag,

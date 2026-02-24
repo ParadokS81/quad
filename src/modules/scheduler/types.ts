@@ -132,7 +132,19 @@ export interface MatchSealedNotification {
   };
 }
 
+export interface ProposalCancelledNotification {
+  type: 'proposal_cancelled';
+  status: 'pending' | 'delivered' | 'failed';
+  proposalId: string;
+  proposerTeamId: string;
+  opponentTeamId: string;
+  cancelledBy: string;
+  createdAt: Timestamp;
+  deliveredAt: Timestamp | null;
+}
+
 export type SchedulerNotification =
   | ChallengeNotification
   | SlotConfirmedNotification
-  | MatchSealedNotification;
+  | MatchSealedNotification
+  | ProposalCancelledNotification;

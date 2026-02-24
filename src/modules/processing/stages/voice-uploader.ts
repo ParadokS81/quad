@@ -154,12 +154,14 @@ async function resolveVisibility(
  * @param teamTag - Team tag from session metadata (e.g., "sr") — fallback for unregistered guilds
  * @param guildId - Discord guild ID for registration lookup
  * @param sessionId - Recording session ULID (from session_metadata.json recording_id)
+ * @param preResolvedRegistration - Pre-resolved registration from the pipeline (skips internal lookup if provided)
  */
 export async function uploadVoiceRecordings(
   segments: SegmentMetadata[],
   teamTag: string,
   guildId: string,
   sessionId: string,
+  preResolvedRegistration?: BotRegistration | null,
 ): Promise<UploadResult> {
   // Lazy-import Firebase — skip entirely if not configured
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -180,21 +182,31 @@ export async function uploadVoiceRecordings(
     return { uploaded: 0, skipped: segments.length };
   }
 
-  // Look up registration for this guild
+  // Use pre-resolved registration if provided, otherwise fall back to lookup
   let registration: BotRegistration | null = null;
-  try {
-    const { getRegistrationForGuild } = await import('../../registration/register.js');
-    registration = await getRegistrationForGuild(guildId);
+  if (preResolvedRegistration !== undefined) {
+    registration = preResolvedRegistration;
     if (registration) {
-      logger.info('Voice upload using registration', {
+      logger.info('Voice upload using pre-resolved registration', {
         teamId: registration.teamId,
         teamTag: registration.teamTag,
       });
     }
-  } catch (err) {
-    logger.debug('Registration lookup failed (non-fatal, using fallback)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  } else {
+    try {
+      const { getRegistrationForGuild } = await import('../../registration/register.js');
+      registration = await getRegistrationForGuild(guildId);
+      if (registration) {
+        logger.info('Voice upload using registration', {
+          teamId: registration.teamId,
+          teamTag: registration.teamTag,
+        });
+      }
+    } catch (err) {
+      logger.debug('Registration lookup failed (non-fatal, using fallback)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // Resolve visibility once (same for all segments in this upload)

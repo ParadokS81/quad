@@ -20,6 +20,7 @@ export interface SessionMetadata {
   guild: { id: string; name: string };
   channel: { id: string; name: string };
   team?: { tag: string; name: string };
+  source_text_channel_id?: string;
   tracks: SessionTrack[];
 }
 

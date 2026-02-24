@@ -56,7 +56,8 @@ export function stopDisconnectListener(): void {
 
 /**
  * Handle a single disconnect request: stop recording if active in this guild,
- * destroy voice connection, leave the guild, and delete the Firestore doc.
+ * destroy voice connection, delete the Firestore doc, then leave the guild
+ * only if no other active registrations remain.
  */
 async function handleDisconnectRequest(
   doc: FirebaseFirestore.QueryDocumentSnapshot,
@@ -64,6 +65,7 @@ async function handleDisconnectRequest(
 ): Promise<void> {
   const data = doc.data();
   const guildId = data.guildId as string | undefined;
+  const db = doc.ref.firestore;
 
   if (!guildId) {
     logger.warn('Disconnect request missing guildId, deleting doc', { docId: doc.id });
@@ -92,18 +94,7 @@ async function handleDisconnectRequest(
       voiceConnection.destroy();
       logger.info('Destroyed voice connection', { guildId });
     }
-
-    // Leave the Discord guild
-    const guild = client.guilds.cache.get(guildId);
-    if (guild) {
-      const guildName = guild.name;
-      await guild.leave();
-      logger.info('Left guild', { guildId, guildName });
-    } else {
-      logger.info('Guild not found in cache (bot may already have been removed)', { guildId });
-    }
   } catch (err) {
-    // If guild.leave() fails (bot was already kicked), still delete the doc
     logger.warn('Error during disconnect cleanup, will still delete doc', {
       docId: doc.id,
       guildId,
@@ -111,11 +102,43 @@ async function handleDisconnectRequest(
     });
   }
 
-  // Always delete the Firestore document
+  // Delete the Firestore document BEFORE checking remaining registrations,
+  // so the check correctly excludes the just-disconnected team.
   await doc.ref.delete();
   logger.info('Disconnect request completed — doc deleted', {
     docId: doc.id,
     teamId: data.teamId,
     guildId,
   });
+
+  // Check if other teams are still registered in this guild
+  const remainingRegs = await db.collection('botRegistrations')
+    .where('guildId', '==', guildId)
+    .where('status', '==', 'active')
+    .limit(1)
+    .get();
+
+  if (remainingRegs.empty) {
+    // No other teams — leave the guild
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      const guildName = guild.name;
+      try {
+        await guild.leave();
+        logger.info('Left guild (last team disconnected)', { guildId, guildName });
+      } catch (err) {
+        logger.warn('Failed to leave guild (bot may already have been removed)', {
+          guildId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } else {
+      logger.info('Guild not found in cache (bot may already have been removed)', { guildId });
+    }
+  } else {
+    logger.info('Other teams still registered — staying in guild', {
+      guildId,
+      remainingTeams: remainingRegs.size,
+    });
+  }
 }

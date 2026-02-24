@@ -23,6 +23,7 @@ export class RecordingSession {
   readonly guildName: string;
   readonly channelId: string;
   readonly channelName: string;
+  readonly sourceTextChannelId?: string;
 
   private endTime: Date | null = null;
   private tracks = new Map<string, UserTrack>();
@@ -40,6 +41,7 @@ export class RecordingSession {
     guildName: string;
     channelId: string;
     channelName: string;
+    sourceTextChannelId?: string;
   }) {
     this.sessionId = opts.sessionId;
     this.outputDir = `${opts.recordingDir}/${opts.sessionId}`;
@@ -48,6 +50,7 @@ export class RecordingSession {
     this.guildName = opts.guildName;
     this.channelId = opts.channelId;
     this.channelName = opts.channelName;
+    this.sourceTextChannelId = opts.sourceTextChannelId;
   }
 
   async init(): Promise<void> {
