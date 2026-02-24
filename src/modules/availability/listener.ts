@@ -11,7 +11,7 @@
  * both weeks, and Discord message post/update.
  */
 
-import { type Client, type TextChannel } from 'discord.js';
+import { type Client, type TextChannel, PermissionFlagsBits } from 'discord.js';
 import { type Firestore } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
 import {
@@ -130,6 +130,42 @@ export function getAvailabilityForWeek(teamId: string, weekId: string): Availabi
     return null;
 }
 
+// ── Channel permission self-heal ─────────────────────────────────────────────
+
+/**
+ * Verify the bot can send messages in the schedule channel.
+ * If the bot's user-level permission override is missing (e.g. manually removed),
+ * re-add it. This handles the case where channel permissions were edited in Discord
+ * and the bot lost its SendMessages override.
+ */
+async function ensureChannelPermissions(client: Client, channelId: string, teamId: string): Promise<void> {
+    try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased()) return;
+        const textChannel = channel as TextChannel;
+        const me = textChannel.guild.members.me;
+        if (!me) return;
+
+        const perms = textChannel.permissionsFor(me);
+        if (perms.has(PermissionFlagsBits.SendMessages) && perms.has(PermissionFlagsBits.AttachFiles)) {
+            return; // All good
+        }
+
+        // Bot can't send — try to add our own override
+        logger.warn('Bot missing SendMessages on schedule channel, adding override', { channelId, teamId });
+        await textChannel.permissionOverwrites.edit(me.id, {
+            SendMessages: true,
+            EmbedLinks: true,
+            AttachFiles: true,
+        });
+        logger.info('Restored bot permission override on schedule channel', { channelId, teamId });
+    } catch (err) {
+        logger.warn('Could not verify/fix channel permissions', {
+            channelId, teamId, error: err instanceof Error ? err.message : String(err),
+        });
+    }
+}
+
 // ── Per-team lifecycle ───────────────────────────────────────────────────────
 
 export async function startTeamListener(
@@ -147,6 +183,9 @@ export async function startTeamListener(
     if (activeTeams.has(teamId)) {
         teardownTeam(teamId);
     }
+
+    // Ensure bot has SendMessages permission on the channel
+    await ensureChannelPermissions(botClient, channelId, teamId);
 
     const weekId = getCurrentWeekId();
     const nextWeekId = getNextWeekId();
