@@ -101,6 +101,7 @@ export async function postOrRecoverMessage(
         try {
             const message = await channel.messages.fetch(storedMessageId);
             await message.edit(payload);
+            logger.debug('Edited grid message in place', { teamId, messageId: storedMessageId, isNextWeek });
             return storedMessageId;
         } catch (err) {
             if (getDiscordErrorCode(err) !== UNKNOWN_MESSAGE) {
@@ -286,6 +287,7 @@ export async function syncCardMessages(
     }
 
     // Delete excess old messages (if we now have fewer cards than before)
+    const deleted = existingIds.length - cards.length;
     for (let i = cards.length; i < existingIds.length; i++) {
         if (existingIds[i]) {
             try {
@@ -293,6 +295,15 @@ export async function syncCardMessages(
                 await msg.delete();
             } catch { /* already gone */ }
         }
+    }
+
+    const edited = newIds.filter((id, i) => i < existingIds.length && id === existingIds[i]).length;
+    const posted = newIds.length - edited;
+    if (posted > 0 || deleted > 0) {
+        logger.info('Card sync', {
+            channelId, teamId,
+            total: cards.length, edited, posted, deleted: Math.max(0, deleted),
+        });
     }
 
     return newIds;

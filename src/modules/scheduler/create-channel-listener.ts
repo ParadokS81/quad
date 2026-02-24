@@ -131,6 +131,7 @@ async function handleCreateChannelRequest(
           PermissionFlagsBits.SendMessages,
           PermissionFlagsBits.EmbedLinks,
           PermissionFlagsBits.AttachFiles,
+          PermissionFlagsBits.ManageRoles, // Allows self-heal if channel is moved to a new category
         ],
       },
     ];

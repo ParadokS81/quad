@@ -148,7 +148,8 @@ async function ensureChannelPermissions(client: Client, channelId: string, teamI
 
         const perms = textChannel.permissionsFor(me);
         if (perms.has(PermissionFlagsBits.SendMessages) && perms.has(PermissionFlagsBits.AttachFiles)) {
-            return; // All good
+            logger.debug('Channel permissions OK', { channelId, teamId });
+            return;
         }
 
         // Bot can't send — try to add our own override
@@ -580,6 +581,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
     }
 
     const now = new Date();
+    const renderStart = Date.now();
 
     // ── Render next week grid ──
     let nextWeekBuffer: Buffer;
@@ -620,6 +622,8 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
         });
         return;
     }
+
+    logger.debug('Grids rendered', { teamId, ms: Date.now() - renderStart });
 
     // ── Post/update next week grid message (must be above current week) ──
     let nextWeekReposted = false;
@@ -889,6 +893,15 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
+
+    logger.info('Render complete', {
+        teamId,
+        ms: Date.now() - renderStart,
+        grids: { nextWeek: !!state.nextWeekMessageId, currentWeek: !!state.messageId },
+        cards: { matches: state.matchMessageIds.length, proposals: state.proposalMessageIds.length },
+        event: state.eventMessageId ? 'posted' : 'none',
+        initial: state.isInitialRender,
+    });
 }
 
 // ── Data fetching ────────────────────────────────────────────────────────────
