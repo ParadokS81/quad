@@ -114,6 +114,17 @@ async function handleCreateChannelRequest(
       }
     }
 
+    // Log bot's guild-level permissions for diagnostics
+    const guildPerms = me.permissions;
+    logger.info('Bot guild permissions', {
+      guildId,
+      manageChannels: guildPerms.has(PermissionFlagsBits.ManageChannels),
+      manageRoles: guildPerms.has(PermissionFlagsBits.ManageRoles),
+      sendMessages: guildPerms.has(PermissionFlagsBits.SendMessages),
+      embedLinks: guildPerms.has(PermissionFlagsBits.EmbedLinks),
+      attachFiles: guildPerms.has(PermissionFlagsBits.AttachFiles),
+    });
+
     // Create a text channel: everyone can read, only bot can write.
     // We build permission overwrites that deny SendMessages for @everyone
     // AND for any role that has SendMessages allowed in the parent category,
@@ -131,7 +142,6 @@ async function handleCreateChannelRequest(
           PermissionFlagsBits.SendMessages,
           PermissionFlagsBits.EmbedLinks,
           PermissionFlagsBits.AttachFiles,
-          PermissionFlagsBits.ManageRoles, // Allows self-heal if channel is moved to a new category
         ],
       },
     ];
