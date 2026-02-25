@@ -857,14 +857,15 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             for (const matchKey of newMatches) {
                 const match = allMatches.find(m => `${m.slotId}:${m.opponentId}` === matchKey);
                 if (match && state.teamInfo) {
-                    newEventLines.push(`\u{1F4C5} Match scheduled: ${state.teamInfo.teamTag} vs ${match.opponentTag} ${match.opponentName} \u2014 ${match.scheduledDate}`);
+                    const typeLabel = match.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
+                    newEventLines.push(`\u2694\uFE0F ${typeLabel} vs **${match.opponentTag} ${match.opponentName}** \u2014 ${match.scheduledDate}`);
                 }
             }
             for (const proposalId of newProposals) {
                 const proposal = state.activeProposals.find(p => p.proposalId === proposalId);
                 if (proposal) {
-                    const typeLabel = proposal.gameType === 'official' ? 'Official' : 'Practice';
-                    newEventLines.push(`\u{1F4E9} New challenge from ${proposal.opponentTag} ${proposal.opponentName} \u2014 ${typeLabel}`);
+                    const typeLabel = proposal.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
+                    newEventLines.push(`\u{1F4E8} ${typeLabel} challenge from **${proposal.opponentTag} ${proposal.opponentName}**`);
                 }
             }
 
@@ -878,7 +879,15 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     state.eventMessageId = null;
                 }
                 // Post new event message (plain text, triggers Discord unread)
-                const messageText = state.recentEvents.join('\n');
+                // Mention roster members so they get pinged
+                const mentions = state.teamInfo
+                    ? Object.values(state.teamInfo.roster)
+                        .filter(m => m.discordUserId)
+                        .map(m => `<@${m.discordUserId}>`)
+                        .join(' ')
+                    : '';
+                const messageText = state.recentEvents.join('\n')
+                    + (mentions ? `\n${mentions}` : '');
                 try {
                     const channel = await botClient.channels.fetch(state.channelId);
                     if (channel && channel.isTextBased()) {
@@ -953,7 +962,8 @@ async function fetchTeamInfo(teamId: string): Promise<TeamInfo | null> {
             const initials = String(
                 userData.initials ?? displayName.slice(0, 2).toUpperCase(),
             );
-            roster[userDoc.id] = { displayName, initials };
+            const discordUserId = userData.discordUserId ? String(userData.discordUserId) : undefined;
+            roster[userDoc.id] = { displayName, initials, discordUserId };
         }
 
         return { teamId, teamTag, teamName, logoUrl, roster };

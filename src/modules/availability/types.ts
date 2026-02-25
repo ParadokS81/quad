@@ -22,6 +22,7 @@ export interface TeamInfo {
 export interface RosterMember {
     displayName: string;
     initials: string;
+    discordUserId?: string;
 }
 
 export interface ScheduleChannelConfig {
