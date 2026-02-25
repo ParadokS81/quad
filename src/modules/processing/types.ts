@@ -145,6 +145,10 @@ export interface SegmentPlayer {
   discordUsername: string;
   audioFile: string;
   duration: number;
+  /** Number of decode errors found by ffmpegVerify. 0 = clean. */
+  verifyErrors?: number;
+  /** Whether the file was re-encoded to fix corrupt Opus packets. */
+  repaired?: boolean;
 }
 
 /** Volume analysis result from ffmpeg volumedetect. */

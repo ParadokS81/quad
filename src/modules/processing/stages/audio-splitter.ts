@@ -326,9 +326,11 @@ export async function splitByTimestamps(
     // Post-slice integrity check: verify and auto-repair corrupt files
     const verifyJobs = players.map(async (player) => {
       const errors = await ffmpegVerify(player.audioFile);
+      player.verifyErrors = errors;
       if (errors === 0) return;
       logger.warn(`Corrupt audio detected: ${player.name} (${errors} errors), repairing...`);
       const repaired = await ffmpegRepair(player.audioFile);
+      player.repaired = repaired;
       if (repaired) {
         const newDuration = await ffprobeDuration(player.audioFile);
         player.duration = newDuration;

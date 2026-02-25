@@ -252,6 +252,8 @@ export async function uploadVoiceRecordings(
         fileName: string;
         size: number;
         duration: number | null;
+        verifyErrors?: number;
+        repaired?: boolean;
       }> = [];
 
       for (const player of segment.players) {
@@ -291,7 +293,7 @@ export async function uploadVoiceRecordings(
           },
         });
 
-        tracks.push({
+        const trackEntry: typeof tracks[number] = {
           discordUserId: player.discordUserId || '',
           discordUsername: player.discordUsername,
           playerName,
@@ -300,7 +302,12 @@ export async function uploadVoiceRecordings(
           fileName,
           size: fileStat.size,
           duration: player.duration || null,
-        });
+        };
+        if (player.verifyErrors && player.verifyErrors > 0) {
+          trackEntry.verifyErrors = player.verifyErrors;
+          trackEntry.repaired = player.repaired ?? false;
+        }
+        tracks.push(trackEntry);
       }
 
       // Determine our team vs opponent from matchData.teams
@@ -310,8 +317,12 @@ export async function uploadVoiceRecordings(
       );
       const opponentTeam = segment.matchData.teams.find(t => t !== ourTeam);
 
+      // Count tracks that had integrity issues (for admin dashboard)
+      const repairedTracks = tracks.filter(t => t.repaired);
+      const totalVerifyErrors = tracks.reduce((sum, t) => sum + (t.verifyErrors || 0), 0);
+
       // Write manifest to Firestore
-      await db.collection('voiceRecordings').doc(segment.demoSha256).set({
+      const manifest: Record<string, unknown> = {
         demoSha256: segment.demoSha256,
         teamId: effectiveTeamId,
         teamTag: effectiveTeamTag.toLowerCase(),
@@ -329,7 +340,14 @@ export async function uploadVoiceRecordings(
         opponentFrags: opponentTeam?.frags || 0,
         gameId: segment.gameId,
         mapOrder: segment.index,
-      });
+      };
+      if (repairedTracks.length > 0) {
+        manifest.integrity = {
+          repairedCount: repairedTracks.length,
+          totalErrors: totalVerifyErrors,
+        };
+      }
+      await db.collection('voiceRecordings').doc(segment.demoSha256).set(manifest);
 
       uploaded++;
       logger.info(`Voice recording uploaded: ${segment.map}`, {
