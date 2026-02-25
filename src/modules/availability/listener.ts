@@ -134,39 +134,126 @@ export function getAvailabilityForWeek(teamId: string, weekId: string): Availabi
 
 // ── Channel permission self-heal ─────────────────────────────────────────────
 
+/** Permissions to deny for everyone except the bot on schedule channels. */
+const SCHEDULE_CHANNEL_DENY = [
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.SendMessagesInThreads,
+    PermissionFlagsBits.CreatePublicThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
+] as const;
+
 /**
- * Verify the bot can send messages in the schedule channel.
- * If the bot's user-level permission override is missing (e.g. manually removed),
- * re-add it. This handles the case where channel permissions were edited in Discord
- * and the bot lost its SendMessages override.
+ * Enforce read-only lockdown on the schedule channel.
+ *
+ * Schedule channels are bot-managed — only the bot should send messages.
+ * This function ensures:
+ * 1. @everyone has SendMessages denied
+ * 2. Any role or member override that allows SendMessages gets it denied
+ * 3. Parent category role overrides that allow SendMessages get denied on the channel
+ * 4. The bot itself has SendMessages + EmbedLinks + AttachFiles allowed
+ *
+ * Runs on every startTeamListener call (startup + channel change), so it
+ * self-heals if a server admin accidentally breaks the permissions.
  */
 async function ensureChannelPermissions(client: Client, channelId: string, teamId: string): Promise<void> {
     try {
         const channel = await client.channels.fetch(channelId);
         if (!channel || !channel.isTextBased()) return;
         const textChannel = channel as TextChannel;
-        const me = textChannel.guild.members.me;
+        const guild = textChannel.guild;
+        const me = guild.members.me;
         if (!me) return;
 
-        const perms = textChannel.permissionsFor(me);
-        if (perms.has(PermissionFlagsBits.SendMessages) && perms.has(PermissionFlagsBits.AttachFiles)) {
-            logger.debug('Channel permissions OK', { channelId, teamId });
+        // Need Manage Channels to edit permission overrides
+        if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+            logger.warn('Bot missing ManageChannels — cannot enforce schedule channel lockdown', { channelId, teamId });
+            // Still try to ensure bot can post (might work via existing override)
+            await ensureBotCanPost(textChannel, me, channelId, teamId);
             return;
         }
 
-        // Bot can't send — try to add our own override
-        logger.warn('Bot missing SendMessages on schedule channel, adding override', { channelId, teamId });
-        await textChannel.permissionOverwrites.edit(me.id, {
-            SendMessages: true,
-            EmbedLinks: true,
-            AttachFiles: true,
-        });
-        logger.info('Restored bot permission override on schedule channel', { channelId, teamId });
+        const denyOverwrite = {
+            SendMessages: false,
+            SendMessagesInThreads: false,
+            CreatePublicThreads: false,
+            CreatePrivateThreads: false,
+        } as const;
+
+        let changed = false;
+
+        // 1. @everyone: deny messaging
+        const everyoneOverwrite = textChannel.permissionOverwrites.cache.get(guild.roles.everyone.id);
+        const everyoneMissingDeny = !everyoneOverwrite
+            || SCHEDULE_CHANNEL_DENY.some(p => !everyoneOverwrite.deny.has(p));
+        if (everyoneMissingDeny) {
+            logger.info('Schedule channel lockdown: denying SendMessages for @everyone', { channelId, teamId });
+            await textChannel.permissionOverwrites.edit(guild.roles.everyone.id, denyOverwrite);
+            changed = true;
+        }
+
+        // 2. Parent category: deny for any role that allows SendMessages there
+        //    (otherwise category-level allows leak through to the channel)
+        if (textChannel.parent) {
+            for (const [overwriteId, overwrite] of textChannel.parent.permissionOverwrites.cache) {
+                if (overwriteId === guild.roles.everyone.id || overwriteId === me.id) continue;
+                if (overwrite.allow.has(PermissionFlagsBits.SendMessages)) {
+                    const chOverwrite = textChannel.permissionOverwrites.cache.get(overwriteId);
+                    if (!chOverwrite || SCHEDULE_CHANNEL_DENY.some(p => !chOverwrite.deny.has(p))) {
+                        logger.info('Schedule channel lockdown: denying SendMessages for category override', {
+                            channelId, teamId, overwriteId,
+                        });
+                        await textChannel.permissionOverwrites.edit(overwriteId, denyOverwrite);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // 3. Existing channel overrides: deny for any role/member that allows SendMessages
+        //    (handles manually-added member overrides that bypass @everyone deny)
+        for (const [overwriteId, overwrite] of textChannel.permissionOverwrites.cache) {
+            if (overwriteId === guild.roles.everyone.id || overwriteId === me.id) continue;
+            if (overwrite.allow.has(PermissionFlagsBits.SendMessages)) {
+                logger.info('Schedule channel lockdown: denying SendMessages for existing override', {
+                    channelId, teamId, overwriteId,
+                });
+                await textChannel.permissionOverwrites.edit(overwriteId, denyOverwrite);
+                changed = true;
+            }
+        }
+
+        // 4. Ensure bot can post
+        await ensureBotCanPost(textChannel, me, channelId, teamId);
+
+        if (changed) {
+            logger.info('Schedule channel lockdown applied', { channelId, teamId });
+        } else {
+            logger.debug('Schedule channel permissions OK', { channelId, teamId });
+        }
     } catch (err) {
         logger.warn('Could not verify/fix channel permissions', {
             channelId, teamId, error: err instanceof Error ? err.message : String(err),
         });
     }
+}
+
+/** Ensure the bot has its own SendMessages/EmbedLinks/AttachFiles override. */
+async function ensureBotCanPost(
+    textChannel: TextChannel, me: import('discord.js').GuildMember,
+    channelId: string, teamId: string,
+): Promise<void> {
+    const perms = textChannel.permissionsFor(me);
+    if (perms.has(PermissionFlagsBits.SendMessages)
+        && perms.has(PermissionFlagsBits.EmbedLinks)
+        && perms.has(PermissionFlagsBits.AttachFiles)) {
+        return;
+    }
+    logger.info('Adding bot permission override on schedule channel', { channelId, teamId });
+    await textChannel.permissionOverwrites.edit(me.id, {
+        SendMessages: true,
+        EmbedLinks: true,
+        AttachFiles: true,
+    });
 }
 
 // ── Per-team lifecycle ───────────────────────────────────────────────────────

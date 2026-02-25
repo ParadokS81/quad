@@ -5,7 +5,7 @@
  * We pick that up, create a read-only text channel, and write back the channel ID.
  */
 
-import { type Client, ChannelType, PermissionFlagsBits } from 'discord.js';
+import { type Client, type Guild, type TextChannel, ChannelType, PermissionFlagsBits } from 'discord.js';
 import { type Firestore, FieldValue } from 'firebase-admin/firestore';
 import { logger } from '../../core/logger.js';
 import { syncGuildChannels } from './channels.js';
@@ -61,6 +61,105 @@ export function stopCreateChannelListener(): void {
 }
 
 /**
+ * Create a read-only schedule text channel in a guild.
+ * Everyone can read, only the bot can write. Handles category detection
+ * and category-level role overrides that could leak SendMessages.
+ *
+ * Reused by both the Firestore-triggered creation flow and the /register button.
+ */
+export async function createScheduleChannel(
+  guild: Guild,
+  channelName: string = 'schedule',
+): Promise<TextChannel> {
+  const channels = await guild.channels.fetch();
+  const me = guild.members.me;
+
+  if (!me) {
+    throw new Error('Bot member not found in guild');
+  }
+
+  // If a channel with this name already exists, prefix with team-related context
+  const nameExists = channels.some(
+    ch => ch !== null && ch.type === ChannelType.GuildText && ch.name === channelName,
+  );
+  const finalName = nameExists ? `${guild.name.toLowerCase().replace(/[^a-z0-9]/g, '')}-${channelName}` : channelName;
+
+  // Find the category that most text channels live in (if any)
+  const textChannels = channels.filter(ch => ch !== null && ch.type === ChannelType.GuildText);
+  const parentCounts = new Map<string | null, number>();
+  for (const [, ch] of textChannels) {
+    const pid = ch!.parentId;
+    parentCounts.set(pid, (parentCounts.get(pid) ?? 0) + 1);
+  }
+  let bestParent: string | null = null;
+  let bestCount = 0;
+  for (const [pid, count] of parentCounts) {
+    if (pid !== null && count > bestCount) {
+      bestParent = pid;
+      bestCount = count;
+    }
+  }
+
+  logger.info('Bot guild permissions', {
+    guildId: guild.id,
+    manageChannels: me.permissions.has(PermissionFlagsBits.ManageChannels),
+    manageRoles: me.permissions.has(PermissionFlagsBits.ManageRoles),
+    sendMessages: me.permissions.has(PermissionFlagsBits.SendMessages),
+    embedLinks: me.permissions.has(PermissionFlagsBits.EmbedLinks),
+    attachFiles: me.permissions.has(PermissionFlagsBits.AttachFiles),
+  });
+
+  // Read-only channel: deny messaging for @everyone, allow for bot.
+  const denyMessagesPerms = [PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.CreatePrivateThreads];
+  const permissionOverwrites: Array<{ id: string; deny?: bigint[]; allow?: bigint[] }> = [
+    {
+      id: guild.roles.everyone.id,
+      deny: denyMessagesPerms,
+      allow: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: me.id,
+      allow: [
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+        PermissionFlagsBits.AttachFiles,
+      ],
+    },
+  ];
+
+  // Deny messaging for category-level roles that allow SendMessages
+  if (bestParent) {
+    const parentChannel = channels.get(bestParent);
+    if (parentChannel && 'permissionOverwrites' in parentChannel) {
+      for (const [overwriteId, overwrite] of parentChannel.permissionOverwrites.cache) {
+        if (overwriteId === guild.roles.everyone.id || overwriteId === me.id) continue;
+        if (overwrite.allow.has(PermissionFlagsBits.SendMessages)) {
+          permissionOverwrites.push({
+            id: overwriteId,
+            deny: denyMessagesPerms,
+          });
+        }
+      }
+    }
+  }
+
+  const channel = await guild.channels.create({
+    name: finalName,
+    type: ChannelType.GuildText,
+    parent: bestParent ?? undefined,
+    permissionOverwrites,
+  });
+
+  logger.info('Created schedule channel', {
+    guildId: guild.id,
+    channelId: channel.id,
+    channelName: channel.name,
+  });
+
+  return channel;
+}
+
+/**
  * Handle a single channel creation request:
  * create a read-only text channel, write back the ID, re-sync channels.
  */
@@ -90,93 +189,7 @@ async function handleCreateChannelRequest(
 
   try {
     const guild = await client.guilds.fetch(guildId);
-    const channels = await guild.channels.fetch();
-    const me = guild.members.me;
-
-    if (!me) {
-      throw new Error('Bot member not found in guild');
-    }
-
-    // Find the category that most text channels live in (if any)
-    const textChannels = channels.filter(ch => ch !== null && ch.type === ChannelType.GuildText);
-    const parentCounts = new Map<string | null, number>();
-    for (const [, ch] of textChannels) {
-      const pid = ch!.parentId;
-      parentCounts.set(pid, (parentCounts.get(pid) ?? 0) + 1);
-    }
-    // Pick the most common parent (excluding null/uncategorized)
-    let bestParent: string | null = null;
-    let bestCount = 0;
-    for (const [pid, count] of parentCounts) {
-      if (pid !== null && count > bestCount) {
-        bestParent = pid;
-        bestCount = count;
-      }
-    }
-
-    // Log bot's guild-level permissions for diagnostics
-    const guildPerms = me.permissions;
-    logger.info('Bot guild permissions', {
-      guildId,
-      manageChannels: guildPerms.has(PermissionFlagsBits.ManageChannels),
-      manageRoles: guildPerms.has(PermissionFlagsBits.ManageRoles),
-      sendMessages: guildPerms.has(PermissionFlagsBits.SendMessages),
-      embedLinks: guildPerms.has(PermissionFlagsBits.EmbedLinks),
-      attachFiles: guildPerms.has(PermissionFlagsBits.AttachFiles),
-    });
-
-    // Create a text channel: everyone can read, only bot can write.
-    // We build permission overwrites that deny SendMessages for @everyone
-    // AND for any role that has SendMessages allowed in the parent category,
-    // so category-level role overrides don't leak through.
-    const denyMessagesPerms = [PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.CreatePrivateThreads];
-    const permissionOverwrites: Array<{ id: string; deny?: bigint[]; allow?: bigint[] }> = [
-      {
-        id: guild.roles.everyone.id,
-        deny: denyMessagesPerms,
-        allow: [PermissionFlagsBits.ViewChannel],
-      },
-      {
-        id: me.id,
-        allow: [
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.EmbedLinks,
-          PermissionFlagsBits.AttachFiles,
-        ],
-      },
-    ];
-
-    // If placing under a category, check for roles that have SendMessages
-    // allowed at the category level — we must explicitly deny them on the
-    // channel, otherwise they override the @everyone deny.
-    if (bestParent) {
-      const parentChannel = channels.get(bestParent);
-      if (parentChannel && 'permissionOverwrites' in parentChannel) {
-        for (const [overwriteId, overwrite] of parentChannel.permissionOverwrites.cache) {
-          // Skip @everyone (already handled) and the bot itself
-          if (overwriteId === guild.roles.everyone.id || overwriteId === me.id) continue;
-          if (overwrite.allow.has(PermissionFlagsBits.SendMessages)) {
-            permissionOverwrites.push({
-              id: overwriteId,
-              deny: denyMessagesPerms,
-            });
-          }
-        }
-      }
-    }
-
-    const channel = await guild.channels.create({
-      name: channelName,
-      type: ChannelType.GuildText,
-      parent: bestParent ?? undefined,
-      permissionOverwrites,
-    });
-
-    logger.info('Created schedule channel', {
-      guildId,
-      channelId: channel.id,
-      channelName: channel.name,
-    });
+    const channel = await createScheduleChannel(guild, channelName);
 
     // Write back the channel ID and clear the request
     await doc.ref.update({

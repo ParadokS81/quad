@@ -5,11 +5,11 @@
  * by linking a Discord guild to a team. Requires Firebase to be configured.
  */
 
-import { Client, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { Client, Events, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import { type BotModule } from '../../core/module.js';
 import { logger } from '../../core/logger.js';
 import { initFirestore } from '../standin/firestore.js';
-import { handleRegister } from './register.js';
+import { handleRegister, isRegisterButton, handleRegisterButton } from './register.js';
 import { startDisconnectListener, stopDisconnectListener } from './disconnect-listener.js';
 
 export { getRegistrationForGuild, type BotRegistration } from './register.js';
@@ -37,8 +37,32 @@ export const registrationModule: BotModule = {
     await handleRegister(interaction);
   },
 
-  registerEvents(_client: Client): void {
-    // No event listeners needed
+  registerEvents(client: Client): void {
+    client.on(Events.InteractionCreate, async (interaction) => {
+      if (!interaction.isButton()) return;
+      if (!isRegisterButton(interaction.customId)) return;
+      if (!firestoreReady) {
+        await interaction.reply({
+          content: 'Registration module is not available — Firebase is not configured.',
+          flags: 64, // Ephemeral
+        });
+        return;
+      }
+      try {
+        await handleRegisterButton(interaction);
+      } catch (err) {
+        logger.error('Register button handler error', {
+          customId: interaction.customId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: 'Something went wrong. Please try again.',
+            flags: 64,
+          }).catch(() => {});
+        }
+      }
+    });
   },
 
   async onReady(client: Client): Promise<void> {

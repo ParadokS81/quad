@@ -11,9 +11,16 @@
  * QW Hub matches belong to this team.
  */
 
-import { ChatInputCommandInteraction, ChannelType, Client, Collection, Guild, GuildMember, GuildChannel, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import {
+  ChatInputCommandInteraction, ChannelType, Client, Collection, Guild, GuildMember,
+  GuildChannel, MessageFlags, PermissionFlagsBits, ComponentType,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, type ButtonInteraction,
+} from 'discord.js';
 import { getDb } from '../standin/firestore.js';
 import { logger } from '../../core/logger.js';
+import { createScheduleChannel } from '../scheduler/create-channel-listener.js';
+import { syncGuildChannels } from '../scheduler/channels.js';
+import { startTeamListener } from '../availability/listener.js';
 
 const SCHEDULER_URL = process.env.SCHEDULER_URL || 'https://matchscheduler.web.app';
 
@@ -314,11 +321,23 @@ export async function handleRegister(interaction: ChatInputCommandInteraction): 
     ? `\nThis server has **${otherTeamCount + 1}** teams registered. Use \`/record start\` from this channel to start a recording session.`
     : '';
 
-  // Tell the user which notification channel was auto-selected (or warn if none found)
-  const scheduleNote = `\n\nSet up a **#schedule** channel at ${SCHEDULER_URL}/#/settings/discord to see availability grids and match notifications.`;
+  // Offer to create a #schedule channel right away
+  const scheduleNote = `\n\nCreate a **#schedule** channel to see your team's availability grid and match notifications — or set it up later on [MatchScheduler](${SCHEDULER_URL}/#/settings/discord).`;
+
+  const scheduleRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`register:createSchedule:${data.teamId}`)
+      .setLabel('Create #schedule channel')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`register:skipSchedule:${data.teamId}`)
+      .setLabel('Skip for now')
+      .setStyle(ButtonStyle.Secondary),
+  );
 
   await interaction.reply({
     content: `This server is now linked to **${data.teamName}** (${data.teamTag}). Voice recordings from this server will be associated with your team.\n${mappingNote}${channelNote}${scheduleNote}${voiceWarning}`,
+    components: [scheduleRow],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -408,4 +427,130 @@ export function buildGuildMembersCache(
   }
 
   return cache;
+}
+
+// ── Register button handling ────────────────────────────────────────────────
+
+/** Check if a button customId belongs to this module. */
+export function isRegisterButton(customId: string): boolean {
+  return customId.startsWith('register:');
+}
+
+/**
+ * Handle button clicks from the /register success message.
+ * - createSchedule: create a #schedule channel and start the availability listener
+ * - skipSchedule: dismiss the buttons gracefully
+ */
+export async function handleRegisterButton(interaction: ButtonInteraction): Promise<void> {
+  const parts = interaction.customId.split(':');
+  const action = parts[1];
+  const teamId = parts[2];
+
+  if (action === 'skipSchedule') {
+    // Disable buttons on the original message
+    await disableButtons(interaction);
+    await interaction.reply({
+      content: `No problem. You can set up a schedule channel later from [MatchScheduler](${SCHEDULER_URL}/#/settings/discord).`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (action === 'createSchedule') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    try {
+      const db = getDb();
+      const guild = interaction.guild;
+
+      if (!guild) {
+        await interaction.editReply({ content: 'This button must be used in a server.' });
+        return;
+      }
+
+      // Verify registration exists and doesn't already have a schedule channel
+      const regDoc = await db.collection('botRegistrations').doc(teamId).get();
+      if (!regDoc.exists) {
+        await interaction.editReply({ content: 'Registration not found. Try running `/register` again.' });
+        return;
+      }
+
+      const regData = regDoc.data()!;
+      if (regData.scheduleChannelId) {
+        await interaction.editReply({
+          content: `A schedule channel is already configured: <#${regData.scheduleChannelId}>.`,
+        });
+        await disableButtons(interaction);
+        return;
+      }
+
+      // Create the channel
+      const channel = await createScheduleChannel(guild);
+
+      // Update Firestore
+      await regDoc.ref.update({
+        scheduleChannelId: channel.id,
+        scheduleChannelName: channel.name,
+        updatedAt: new Date(),
+      });
+
+      // Sync channel list for MatchScheduler dropdown
+      await syncGuildChannels(db, interaction.client, guild.id);
+
+      // Start the availability listener (grid appears immediately)
+      try {
+        await startTeamListener(teamId, channel.id, null);
+        logger.info('Started availability listener from /register button', {
+          teamId, channelId: channel.id,
+        });
+      } catch (listenerErr) {
+        logger.warn('Failed to start availability listener from /register button', {
+          teamId, error: listenerErr instanceof Error ? listenerErr.message : String(listenerErr),
+        });
+      }
+
+      await disableButtons(interaction);
+      await interaction.editReply({
+        content: `Created <#${channel.id}>! Your availability grid will appear there shortly.`,
+      });
+
+      logger.info('Schedule channel created via /register button', {
+        teamId,
+        guildId: guild.id,
+        channelId: channel.id,
+        channelName: channel.name,
+        createdBy: interaction.user.id,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Failed to create schedule channel from /register button', {
+        teamId, error: msg,
+      });
+      await interaction.editReply({
+        content: `Failed to create the channel: ${msg}\nYou can try again from [MatchScheduler](${SCHEDULER_URL}/#/settings/discord).`,
+      });
+    }
+    return;
+  }
+}
+
+/** Disable all buttons on the message that triggered this interaction. */
+async function disableButtons(interaction: ButtonInteraction): Promise<void> {
+  try {
+    const rows = interaction.message.components
+      .filter(row => row.type === ComponentType.ActionRow)
+      .map(row => {
+        const newRow = new ActionRowBuilder<ButtonBuilder>();
+        for (const component of row.components) {
+          if (component.type !== ComponentType.Button) continue;
+          const btn = ButtonBuilder.from(component);
+          btn.setDisabled(true);
+          newRow.addComponents(btn);
+        }
+        return newRow;
+      });
+    await interaction.message.edit({ components: rows });
+  } catch {
+    // Ephemeral message may have expired — safe to ignore
+  }
 }
