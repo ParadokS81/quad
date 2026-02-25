@@ -9,7 +9,7 @@
 
 const CET_OFFSET = 1;
 
-const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+export const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DAY_LABELS: Record<string, string> = {
     mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu',
     fri: 'Fri', sat: 'Sat', sun: 'Sun',
@@ -158,4 +158,33 @@ export function getRemainingDays(weekId: string): string[] {
         const lastSlot = cetToUtcSlotId(day, '2300');
         return !isSlotPast(lastSlot, weekId);
     });
+}
+
+/**
+ * Get the adjacent valid day in a given direction within a week.
+ * For current week, skips past days. For next week, all days are valid.
+ * Returns null if no valid adjacent day exists (boundary reached).
+ */
+export function getAdjacentDay(
+    cetDay: string,
+    direction: 'prev' | 'next',
+    weekId: string,
+    isNextWeek: boolean,
+): string | null {
+    const dayIdx = DAY_ORDER.indexOf(cetDay);
+    if (dayIdx === -1) return null;
+
+    const step = direction === 'next' ? 1 : -1;
+    let candidate = dayIdx + step;
+
+    while (candidate >= 0 && candidate < DAY_ORDER.length) {
+        const candidateDay = DAY_ORDER[candidate];
+        // For next week, all days are valid. For current week, skip past days.
+        if (isNextWeek || !isDayPast(candidateDay, weekId)) {
+            return candidateDay;
+        }
+        candidate += step;
+    }
+
+    return null; // No valid day in this direction
 }
