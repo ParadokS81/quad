@@ -26,7 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m venv /opt/whisper-venv
 ENV PATH="/opt/whisper-venv/bin:$PATH"
 
-RUN pip install --no-cache-dir faster-whisper
+RUN pip install --no-cache-dir faster-whisper nvidia-cublas-cu12 nvidia-cudnn-cu12
+
+# CUDA runtime libs installed by pip need to be on LD_LIBRARY_PATH for CTranslate2
+ENV LD_LIBRARY_PATH="/opt/whisper-venv/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/whisper-venv/lib/python3.11/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}"
 
 WORKDIR /app
 

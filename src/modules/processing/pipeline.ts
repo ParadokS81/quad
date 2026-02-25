@@ -10,7 +10,7 @@
  * Status tracked via pipeline_status.json in the processed/ directory.
  */
 
-import { readFile, writeFile, readdir, mkdir, stat, unlink } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { logger } from '../../core/logger.js';
@@ -301,24 +301,10 @@ export async function runFastPipeline(
         if (uploadResult.uploaded > 0) {
           logger.info('Voice recordings uploaded to Firebase', { ...uploadResult });
 
-          // Clean up source recordings after successful upload
-          try {
-            const files = await readdir(sessionDir);
-            let cleaned = 0;
-            for (const file of files) {
-              if (file.endsWith('.ogg')) {
-                await unlink(join(sessionDir, file));
-                cleaned++;
-              }
-            }
-            if (cleaned > 0) {
-              logger.info(`Cleaned up ${cleaned} source recording files`);
-            }
-          } catch (cleanupErr) {
-            logger.warn('Source recording cleanup failed (non-fatal)', {
-              error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-            });
-          }
+          // Keep source recordings for debugging — corrupt Opus packets
+          // have been observed in some guilds (DAVE protocol issue).
+          // TODO: Add retention policy (e.g. 7 days) once recording is stable.
+          logger.info('Source recordings retained for debugging');
         }
       } catch (err) {
         logger.warn('Voice upload failed (non-fatal)', {

@@ -401,17 +401,20 @@ function buildSlotButtonGrid(
         }
     }
 
-    // Navigation row: [◀ Prev] [Save] [Next ▶]
+    // Navigation row: [◀ Mon] [Save] [Wed ▶]
     const isNextWeek = weekId !== getCurrentWeekId();
     const prevDay = getAdjacentDay(cetDay, 'prev', weekId, isNextWeek);
     const nextDay = getAdjacentDay(cetDay, 'next', weekId, isNextWeek);
+
+    const prevLabel = prevDay ? `◀ ${capitalize(prevDay)}` : '◀';
+    const nextLabel = nextDay ? `${capitalize(nextDay)} ▶` : '▶';
 
     const navRow = new ActionRowBuilder<ButtonBuilder>();
 
     navRow.addComponents(
         new ButtonBuilder()
             .setCustomId(`avail:prevDay:${teamId}:${cetDay}:${weekId}`)
-            .setLabel('◀ Prev')
+            .setLabel(prevLabel)
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(!prevDay),
     );
@@ -426,7 +429,7 @@ function buildSlotButtonGrid(
     navRow.addComponents(
         new ButtonBuilder()
             .setCustomId(`avail:nextDay:${teamId}:${cetDay}:${weekId}`)
-            .setLabel('Next ▶')
+            .setLabel(nextLabel)
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(!nextDay),
     );
