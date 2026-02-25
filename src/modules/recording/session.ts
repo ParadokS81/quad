@@ -77,6 +77,15 @@ export class RecordingSession {
   start(connection: VoiceConnection, guild: Guild): void {
     this.connection = connection;
 
+    // Log DAVE protocol events throughout the entire recording session.
+    // The join-phase debug listener is removed after Ready — this one stays active
+    // to capture mid-recording DAVE transitions, epoch changes, and decryption failures.
+    connection.on('debug', (message) => {
+      if (message.includes('[DAVE]') || message.includes('decrypt')) {
+        logger.info('DAVE event (mid-recording)', { sessionId: this.sessionId, message });
+      }
+    });
+
     // Handle voice connection state changes
     connection.on(VoiceConnectionStatus.Disconnected, () => {
       if (this.stopping) return;

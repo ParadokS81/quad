@@ -43,19 +43,29 @@ export const recordingModule: BotModule = {
       if (oldState.channelId && isRecording(oldGuildId)) {
         const recordingChannelId = getRecordingChannelId(oldGuildId);
         if (oldState.channelId === recordingChannelId && newState.channelId !== recordingChannelId) {
-          const username = oldState.member?.user.username ?? userId;
-          logger.info(`User left recording channel: ${username}`, { userId, channelId: recordingChannelId, guildId: oldGuildId });
+          const displayName = oldState.member?.displayName ?? oldState.member?.user.username ?? userId;
+          const session = getActiveSession(oldGuildId);
+          const isTracked = session?.hasUser(userId) ?? false;
 
           // Check if channel is now empty (no non-bot users) → start idle timer
           const channel = client.channels.cache.get(recordingChannelId);
+          let channelSize = 0;
           if (channel?.type === ChannelType.GuildVoice || channel?.type === ChannelType.GuildStageVoice) {
             const nonBotMembers = channel.members.filter((m) => !m.user.bot);
-            if (nonBotMembers.size === 0) {
+            channelSize = nonBotMembers.size;
+            if (channelSize === 0) {
               startIdleTimer(oldGuildId);
             }
             // Notify participant change
             fireParticipantChangeCallbacks(oldGuildId, nonBotMembers.map((m) => m.displayName));
           }
+
+          // Log with DAVE-relevant context: every join/leave triggers MLS group change
+          logger.info(`Voice channel leave: ${displayName}`, {
+            userId, guildId: oldGuildId, isTracked,
+            channelMembers: channelSize,
+            sessionId: session?.sessionId,
+          });
         }
       }
 
@@ -67,18 +77,29 @@ export const recordingModule: BotModule = {
           cancelIdleTimer(newGuildId);
 
           const session = getActiveSession(newGuildId);
-          if (session?.hasUser(userId)) {
+          const isTracked = session?.hasUser(userId) ?? false;
+          if (isTracked) {
             // User rejoined — reattach their opus stream to the existing track
-            session.reattachUser(userId);
+            session!.reattachUser(userId);
           }
           // If they don't have a track yet, the speaking event handler will create one
 
           // Notify participant change
           const channel = client.channels.cache.get(recordingChannelId);
+          let channelSize = 0;
           if (channel?.type === ChannelType.GuildVoice || channel?.type === ChannelType.GuildStageVoice) {
             const participants = channel.members.filter((m) => !m.user.bot).map((m) => m.displayName);
+            channelSize = participants.length;
             fireParticipantChangeCallbacks(newGuildId, participants);
           }
+
+          const displayName = newState.member?.displayName ?? newState.member?.user.username ?? userId;
+          // Log with DAVE-relevant context: every join/leave triggers MLS group change
+          logger.info(`Voice channel join: ${displayName}`, {
+            userId, guildId: newGuildId, isTracked,
+            channelMembers: channelSize,
+            sessionId: session?.sessionId,
+          });
         }
       }
     });

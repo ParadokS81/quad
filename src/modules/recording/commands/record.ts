@@ -212,6 +212,9 @@ async function joinWithRetry(opts: {
       selfDeaf: false,
       selfMute: true,
       debug: true,
+      // Lower from default 36 — triggers DAVE session reinit faster on key rotation failures.
+      // At 50 packets/sec, 10 failures = ~200ms before reinit (vs ~720ms at 36).
+      decryptionFailureTolerance: 10,
     });
 
     // Log DAVE/networking debug events — info level so they show in production logs

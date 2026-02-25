@@ -5,6 +5,36 @@ import prism from 'prism-media';
 import { logger } from '../../core/logger.js';
 import { SILENT_OPUS_FRAME, FRAME_DURATION_MS } from './silence.js';
 
+/** Max valid Opus packet size per RFC 6716 */
+const MAX_OPUS_PACKET_SIZE = 1275;
+
+/** DAVE protocol magic marker — last 2 bytes of an undecrypted DAVE frame */
+const DAVE_MAGIC = 0xfafa;
+
+/**
+ * Validate an Opus packet. Returns true if the packet looks like valid Opus,
+ * false if it's likely corrupt (e.g. undecrypted DAVE ciphertext).
+ *
+ * Checks:
+ * 1. Non-empty and within RFC 6716 size limits
+ * 2. Not an undecrypted DAVE frame (trailing 0xFAFA magic marker)
+ * 3. TOC byte frame count code is valid (bits 0-1 must be 0-3, which is always true,
+ *    but code=3 VBR packets must have at least 2 bytes for the frame count header)
+ */
+function isValidOpusPacket(packet: Buffer): boolean {
+  const len = packet.length;
+  if (len === 0 || len > MAX_OPUS_PACKET_SIZE) return false;
+
+  // DAVE passthrough detection: encrypted frames end with 0xFAFA magic marker
+  if (len >= 4 && packet.readUInt16BE(len - 2) === DAVE_MAGIC) return false;
+
+  // TOC byte code=3 (arbitrary CBR/VBR) requires at least 2 bytes
+  const code = packet[0] & 0x03;
+  if (code === 3 && len < 2) return false;
+
+  return true;
+}
+
 export class UserTrack {
   readonly trackNumber: number;
   readonly userId: string;
@@ -24,6 +54,11 @@ export class UserTrack {
   private trackStartTime = 0;
   private recordingStartTime: Date;
   private failed = false;
+
+  // Packet validation stats
+  private validPackets = 0;
+  private corruptPackets = 0;
+  private corruptLoggedAt = 0; // timestamp of first corruption log (avoid spam)
 
   constructor(opts: {
     trackNumber: number;
@@ -102,13 +137,43 @@ export class UserTrack {
     // Track start time = recording start (frames are counted from here)
     this.trackStartTime = this.recordingStartTime.getTime();
 
-    // Listen for real packets and write them to OGG
+    // Listen for real packets — validate before writing to OGG
     this.lastPacketTime = Date.now();
     opusStream.on('data', (packet: Buffer) => {
       if (this.failed) return;
       this.lastPacketTime = Date.now();
       this.framesWritten++;
-      this.oggStream.write(packet);
+
+      if (isValidOpusPacket(packet)) {
+        this.validPackets++;
+        this.oggStream.write(packet);
+      } else {
+        this.corruptPackets++;
+        this.oggStream.write(SILENT_OPUS_FRAME);
+
+        // Log first corruption event per track, then periodic summaries
+        const now = Date.now();
+        if (this.corruptPackets === 1) {
+          this.corruptLoggedAt = now;
+          logger.warn(`Corrupt Opus packet detected — replacing with silence`, {
+            track: this.trackNumber,
+            username: this.username,
+            packetLen: packet.length,
+            firstBytes: packet.subarray(0, Math.min(8, packet.length)).toString('hex'),
+            lastBytes: packet.length >= 4 ? packet.subarray(packet.length - 4).toString('hex') : '',
+            isDavePassthrough: packet.length >= 4 && packet.readUInt16BE(packet.length - 2) === DAVE_MAGIC,
+          });
+        } else if (now - this.corruptLoggedAt > 30_000) {
+          // Summary every 30s while corruption is ongoing
+          this.corruptLoggedAt = now;
+          logger.warn(`Opus corruption ongoing`, {
+            track: this.trackNumber,
+            username: this.username,
+            corruptTotal: this.corruptPackets,
+            validTotal: this.validPackets,
+          });
+        }
+      }
     });
 
     opusStream.on('error', (err) => {
@@ -158,7 +223,14 @@ export class UserTrack {
       if (this.failed) return;
       this.lastPacketTime = Date.now();
       this.framesWritten++;
-      this.oggStream.write(packet);
+
+      if (isValidOpusPacket(packet)) {
+        this.validPackets++;
+        this.oggStream.write(packet);
+      } else {
+        this.corruptPackets++;
+        this.oggStream.write(SILENT_OPUS_FRAME);
+      }
     });
 
     opusStream.on('error', (err) => {
@@ -239,9 +311,15 @@ export class UserTrack {
       // File may not exist if track failed early
     }
 
-    logger.info(`Track ${this.trackNumber} stopped: ${this.audioFile}${fileSize ? ` (${fileSize})` : ''}`, {
+    const corruptInfo = this.corruptPackets > 0
+      ? `, ${this.corruptPackets} corrupt/${this.validPackets + this.corruptPackets} total packets`
+      : '';
+
+    logger.info(`Track ${this.trackNumber} stopped: ${this.audioFile}${fileSize ? ` (${fileSize})` : ''}${corruptInfo}`, {
       username: this.username,
       userId: this.userId,
+      validPackets: this.validPackets,
+      corruptPackets: this.corruptPackets,
     });
   }
 

@@ -1,0 +1,14 @@
+diff --git a/node_modules/@discordjs/voice/dist/index.js b/node_modules/@discordjs/voice/dist/index.js
+index e8f7a5e..e0423bd 100644
+--- a/node_modules/@discordjs/voice/dist/index.js
++++ b/node_modules/@discordjs/voice/dist/index.js
+@@ -966,7 +966,8 @@ var DAVESession = class extends import_node_events2.EventEmitter {
+    */
+   decrypt(packet, userId) {
+     const canDecrypt = this.session?.ready && (this.protocolVersion !== 0 || this.session?.canPassthrough(userId));
+-    if (packet.equals(SILENCE_FRAME) || !canDecrypt || !this.session) return packet;
++    if (packet.equals(SILENCE_FRAME)) return packet;
++    if (!canDecrypt || !this.session) return this.protocolVersion === 0 ? packet : null;
+     try {
+       const buffer = this.session.decrypt(userId, Davey.MediaType.AUDIO, packet);
+       this.consecutiveFailures = 0;
