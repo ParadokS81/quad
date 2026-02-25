@@ -5,7 +5,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -47,7 +47,13 @@ export async function ffprobeDuration(audioPath: string): Promise<number> {
 }
 
 /**
- * Slice audio using ffmpeg with stream copy (no re-encoding).
+ * Slice and re-encode audio using ffmpeg.
+ *
+ * Re-encodes to Opus instead of stream copy (-c copy) to produce a clean
+ * OGG container. This sanitizes any corrupt Opus packets (e.g. from DAVE
+ * protocol decryption failures) that would otherwise poison strict decoders
+ * like browsers and Whisper. The quality impact is negligible for speech.
+ *
  * Returns the actual duration of the output file.
  */
 export async function ffmpegSlice(
@@ -61,8 +67,12 @@ export async function ffmpegSlice(
     '-ss', startSec.toFixed(3),
     '-to', endSec.toFixed(3),
     '-i', inputPath,
-    '-c', 'copy',
-    '-avoid_negative_ts', 'make_zero',
+    '-af', 'aresample=async=1',
+    '-c:a', 'libopus',
+    '-b:a', '24k',
+    '-ac', '1',
+    '-ar', '48000',
+    '-application', 'voip',
     outputPath,
   ]);
 
@@ -93,6 +103,55 @@ export async function ffmpegVolumeDetect(audioPath: string): Promise<VolumeStats
     meanVolume: meanMatch ? parseFloat(meanMatch[1]) : -Infinity,
     maxVolume: maxMatch ? parseFloat(maxMatch[1]) : -Infinity,
   };
+}
+
+/**
+ * Check an audio file for decode errors (corrupt Opus packets, DTS issues).
+ * Returns the number of errors found. 0 = clean file.
+ */
+async function ffmpegVerify(audioPath: string): Promise<number> {
+  try {
+    const { stderr } = await execFileAsync('ffmpeg', [
+      '-v', 'error',
+      '-i', audioPath,
+      '-f', 'null',
+      '-',
+    ]);
+    if (!stderr.trim()) return 0;
+    return stderr.trim().split('\n').length;
+  } catch (err: unknown) {
+    // ffmpeg exits non-zero on some errors but still reports them in stderr
+    const stderr = (err as { stderr?: string }).stderr ?? '';
+    if (!stderr.trim()) return 1;
+    return stderr.trim().split('\n').length;
+  }
+}
+
+/**
+ * Re-encode an audio file in-place to sanitize corrupt Opus packets.
+ * Returns true if the re-encoded file is clean.
+ */
+async function ffmpegRepair(audioPath: string): Promise<boolean> {
+  const tmpPath = `${audioPath}.repair.tmp`;
+  try {
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i', audioPath,
+      '-af', 'aresample=async=1',
+      '-c:a', 'libopus',
+      '-b:a', '24k',
+      '-ac', '1',
+      '-ar', '48000',
+      '-application', 'voip',
+      tmpPath,
+    ]);
+    await rename(tmpPath, audioPath);
+    return true;
+  } catch {
+    // Clean up temp file on failure
+    try { await unlink(tmpPath); } catch { /* ignore */ }
+    return false;
+  }
 }
 
 /** Tracks where the loudest moment is below this are considered silent. */
@@ -214,7 +273,8 @@ export async function splitByTimestamps(
     await ensureDir(join(outputDir, dirName, 'transcripts'));
     await ensureDir(join(outputDir, dirName, 'analysis'));
 
-    const players: SegmentPlayer[] = [];
+    // Slice all tracks in parallel — each ffmpeg instance is independent
+    const sliceJobs: Array<Promise<SegmentPlayer | null>> = [];
 
     for (const track of session.tracks) {
       if (silentTracks.has(track.track_number)) continue;
@@ -249,20 +309,44 @@ export async function splitByTimestamps(
       const audioExt = extname(track.audio_file).replace('.', '');
       const outPath = join(audioDir, `${playerName}.${audioExt}`);
 
-      const actualDuration = await ffmpegSlice(audioPath, outPath, startSec, endSec);
-
-      logger.info(
-        `Split ${track.discord_username}: ${startSec.toFixed(1)}s-${endSec.toFixed(1)}s (${actualDuration.toFixed(1)}s) -> ${playerName}.${audioExt}`,
+      sliceJobs.push(
+        ffmpegSlice(audioPath, outPath, startSec, endSec).then((actualDuration) => {
+          logger.info(
+            `Split ${track.discord_username}: ${startSec.toFixed(1)}s-${endSec.toFixed(1)}s (${actualDuration.toFixed(1)}s) -> ${playerName}.${audioExt}`,
+          );
+          return {
+            name: playerName,
+            discordUserId: track.discord_user_id,
+            discordUsername: track.discord_username,
+            audioFile: outPath,
+            duration: actualDuration,
+          };
+        }).catch((err) => {
+          logger.warn(`Failed to slice ${track.discord_username}: ${err}`);
+          return null;
+        }),
       );
-
-      players.push({
-        name: playerName,
-        discordUserId: track.discord_user_id,
-        discordUsername: track.discord_username,
-        audioFile: outPath,
-        duration: actualDuration,
-      });
     }
+
+    const players = (await Promise.all(sliceJobs)).filter(
+      (p): p is SegmentPlayer => p !== null,
+    );
+
+    // Post-slice integrity check: verify and auto-repair corrupt files
+    const verifyJobs = players.map(async (player) => {
+      const errors = await ffmpegVerify(player.audioFile);
+      if (errors === 0) return;
+      logger.warn(`Corrupt audio detected: ${player.name} (${errors} errors), repairing...`);
+      const repaired = await ffmpegRepair(player.audioFile);
+      if (repaired) {
+        const newDuration = await ffprobeDuration(player.audioFile);
+        player.duration = newDuration;
+        logger.info(`Repaired: ${player.name} (${newDuration.toFixed(1)}s)`);
+      } else {
+        logger.error(`Repair failed: ${player.name} — file may still be corrupt`);
+      }
+    });
+    await Promise.all(verifyJobs);
 
     // Collect skipped tracks relevant to this segment
     const skippedForSegment = [...silentTracks.values()];
@@ -405,7 +489,7 @@ export async function extractIntermissions(
     const audioDir = await ensureDir(join(outputDir, dirName, 'audio'));
     await ensureDir(join(outputDir, dirName, 'transcripts'));
 
-    const players: SegmentPlayer[] = [];
+    const sliceJobs: Array<Promise<SegmentPlayer | null>> = [];
 
     for (const track of session.tracks) {
       const audioPath = join(recordingDir, track.audio_file);
@@ -430,20 +514,28 @@ export async function extractIntermissions(
       const audioExt = extname(track.audio_file).replace('.', '');
       const outPath = join(audioDir, `${playerName}.${audioExt}`);
 
-      const actualDuration = await ffmpegSlice(audioPath, outPath, startSec, endSec);
-
-      logger.info(
-        `Intermission ${label}: ${playerName} ${startSec.toFixed(1)}s-${endSec.toFixed(1)}s (${actualDuration.toFixed(1)}s)`,
+      sliceJobs.push(
+        ffmpegSlice(audioPath, outPath, startSec, endSec).then((actualDuration) => {
+          logger.info(
+            `Intermission ${label}: ${playerName} ${startSec.toFixed(1)}s-${endSec.toFixed(1)}s (${actualDuration.toFixed(1)}s)`,
+          );
+          return {
+            name: playerName,
+            discordUserId: track.discord_user_id,
+            discordUsername: track.discord_username,
+            audioFile: outPath,
+            duration: actualDuration,
+          };
+        }).catch((err) => {
+          logger.warn(`Failed to slice intermission ${label} ${playerName}: ${err}`);
+          return null;
+        }),
       );
-
-      players.push({
-        name: playerName,
-        discordUserId: track.discord_user_id,
-        discordUsername: track.discord_username,
-        audioFile: outPath,
-        duration: actualDuration,
-      });
     }
+
+    const players = (await Promise.all(sliceJobs)).filter(
+      (p): p is SegmentPlayer => p !== null,
+    );
 
     const segment: SegmentMetadata = {
       index: gapIdx,
