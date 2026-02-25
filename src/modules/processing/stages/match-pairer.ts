@@ -12,6 +12,13 @@ const DEFAULT_MATCH_LENGTH = 1210; // 10s countdown + 20min gameplay
 const MAX_SESSION_HOURS = 4;
 const MIN_PLAYER_OVERLAP = 2; // Minimum QW player names that must match for a "mix" game
 
+/** Strip QW decorations and Discord punctuation for name comparison.
+ *  Hub names have bullets ("• razor"), team prefixes, etc.
+ *  Discord names may have dots (".andeh"), underscores, brackets. */
+function normalizeName(name: string): string {
+  return name.replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '').toLowerCase();
+}
+
 export interface PairMatchesOptions {
   defaultDuration?: number;
   /** Team tag to filter matches (e.g., "]sr["). Primary filter. */
@@ -127,7 +134,7 @@ export function pairMatches(
     }
 
     // Score confidence
-    const { score, reasons } = scoreConfidence(match, session, audioStart, ktxstats !== null);
+    const { score, reasons } = scoreConfidence(match, session, audioStart, ktxstats !== null, knownPlayers);
 
     pairings.push({
       matchId: match.id ?? 0,
@@ -186,14 +193,16 @@ function filterOurMatches(
       if (tagMatch) return true;
     }
 
-    // Check player name overlap (substring match — hub names have QW decorations like "• razor")
+    // Check player name overlap (normalized — strips QW decorations + Discord punctuation)
     if (resolvedQwNames.size > 0) {
-      const matchPlayerNames = (match.players ?? [])
-        .map((p) => p.name?.toLowerCase())
-        .filter(Boolean) as string[];
+      const matchPlayerNorms = (match.players ?? [])
+        .map((p) => p.name ? normalizeName(p.name) : '')
+        .filter(Boolean);
       let overlap = 0;
       for (const qwName of resolvedQwNames) {
-        if (matchPlayerNames.some((hubName) => hubName.includes(qwName))) overlap++;
+        const norm = normalizeName(qwName);
+        if (norm.length < 2) continue;
+        if (matchPlayerNorms.some((hubNorm) => hubNorm.includes(norm) || norm.includes(hubNorm))) overlap++;
       }
       if (overlap >= MIN_PLAYER_OVERLAP) return true;
     }
@@ -216,6 +225,7 @@ function scoreConfidence(
   session: SessionMetadata,
   audioOffset: number,
   hasKtxstats: boolean,
+  knownPlayers: Record<string, string> = {},
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
@@ -241,21 +251,25 @@ function scoreConfidence(
 
   // Factor 3: Player name overlap (weight 0.3)
   // Hub player names have QW decorations (e.g., "• razor", "tco.........axe")
-  // Use substring matching: check if hub name contains the Discord display name
+  // Use substring matching: check if hub name contains any known name
   const sessionNames = new Set<string>();
   for (const track of session.tracks) {
-    sessionNames.add(track.discord_username.toLowerCase());
-    sessionNames.add(track.discord_display_name.toLowerCase());
+    // Resolved QW names from knownPlayers (most reliable — stable nicks)
+    const qwName = knownPlayers[track.discord_user_id];
+    if (qwName) sessionNames.add(normalizeName(qwName));
+    // Discord names as fallback
+    sessionNames.add(normalizeName(track.discord_username));
+    sessionNames.add(normalizeName(track.discord_display_name));
   }
 
-  const matchPlayerNames = (match.players ?? [])
-    .map((p) => p.name?.toLowerCase())
-    .filter(Boolean) as string[];
+  const matchPlayerNorms = (match.players ?? [])
+    .map((p) => p.name ? normalizeName(p.name) : '')
+    .filter(Boolean);
 
   let overlapCount = 0;
   for (const name of sessionNames) {
     if (name.length < 3) continue; // Skip very short names to avoid false positives
-    if (matchPlayerNames.some((hubName) => hubName.includes(name))) overlapCount++;
+    if (matchPlayerNorms.some((hubNorm) => hubNorm.includes(name) || name.includes(hubNorm))) overlapCount++;
   }
 
   if (overlapCount >= 3) {
