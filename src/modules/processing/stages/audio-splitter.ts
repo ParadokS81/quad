@@ -47,13 +47,8 @@ export async function ffprobeDuration(audioPath: string): Promise<number> {
 }
 
 /**
- * Slice and re-encode audio using ffmpeg.
- *
- * Re-encodes to Opus instead of stream copy (-c copy) to produce a clean
- * OGG container. This sanitizes any corrupt Opus packets (e.g. from DAVE
- * protocol decryption failures) that would otherwise poison strict decoders
- * like browsers and Whisper. The quality impact is negligible for speech.
- *
+ * Slice audio using ffmpeg with stream copy (no re-encoding).
+ * Produces a bit-perfect copy of the source audio for the given time range.
  * Returns the actual duration of the output file.
  */
 export async function ffmpegSlice(
@@ -67,12 +62,8 @@ export async function ffmpegSlice(
     '-ss', startSec.toFixed(3),
     '-to', endSec.toFixed(3),
     '-i', inputPath,
-    '-af', 'aresample=async=1',
-    '-c:a', 'libopus',
-    '-b:a', '24k',
-    '-ac', '1',
-    '-ar', '48000',
-    '-application', 'voip',
+    '-c', 'copy',
+    '-avoid_negative_ts', 'make_zero',
     outputPath,
   ]);
 
