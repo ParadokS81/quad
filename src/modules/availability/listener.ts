@@ -923,7 +923,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
 
     // ── Event message — rolling "last 3 events" at bottom of #schedule ──
     // Delete + repost (not edit) so Discord fires an unread notification.
-    const MAX_RECENT_EVENTS = 3;
+    const MAX_RECENT_EVENTS = 1;
     try {
         const currentProposalIds = new Set(state.activeProposals.map(p => p.proposalId));
         const allMatches = [...state.scheduledMatches, ...state.nextWeekMatches];
@@ -957,7 +957,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             }
 
             if (newEventLines.length > 0) {
-                // Prepend new events (newest first), keep max 3 total
+                // Keep only the latest event
                 state.recentEvents = [...newEventLines, ...state.recentEvents].slice(0, MAX_RECENT_EVENTS);
 
                 // Delete old event message
