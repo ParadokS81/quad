@@ -495,6 +495,11 @@ async function refreshProposals(
     state.activeProposals = activeProposals;
 
     if (activeProposals.length !== prevCount) {
+        if (activeProposals.length < prevCount) {
+            // Proposal sealed or cancelled — poll for new scheduled match immediately
+            // so the match card appears in the same render (not after 5-min delay).
+            await pollScheduledMatches(teamId);
+        }
         scheduleRender(teamId);
     }
 }
