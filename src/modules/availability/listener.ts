@@ -90,11 +90,13 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const matchMessageIds = (data.matchMessageIds as string[] | undefined) ?? [];
         const proposalMessageIds = (data.proposalMessageIds as string[] | undefined) ?? [];
         const eventMessageId = (data.eventMessageId as string | null) ?? null;
+        const knownProposalIds = (data.knownProposalIds as string[] | undefined) ?? null;
+        const knownMatchKeys = (data.knownMatchKeys as string[] | undefined) ?? null;
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds, eventMessageId);
+            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds, eventMessageId, knownProposalIds, knownMatchKeys);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -177,6 +179,8 @@ export async function startTeamListener(
     storedMatchMessageIds: string[] = [],
     storedProposalMessageIds: string[] = [],
     storedEventMessageId: string | null = null,
+    storedKnownProposalIds: string[] | null = null,
+    storedKnownMatchKeys: string[] | null = null,
 ): Promise<void> {
     if (!firestoreDb || !botClient) return;
 
@@ -219,9 +223,11 @@ export async function startTeamListener(
         // Event message
         eventMessageId: storedEventMessageId,
         recentEvents: [],
-        prevProposalIds: new Set(),
-        prevMatchKeys: new Set(),
-        isInitialRender: true,
+        prevProposalIds: storedKnownProposalIds ? new Set(storedKnownProposalIds) : new Set(),
+        prevMatchKeys: storedKnownMatchKeys ? new Set(storedKnownMatchKeys) : new Set(),
+        // Only skip events on first-ever setup (no persisted state).
+        // When persisted sets exist, we can detect proposals created during downtime.
+        isInitialRender: storedKnownProposalIds === null,
     };
 
     activeTeams.set(teamId, state);
@@ -888,6 +894,12 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             state.prevProposalIds = currentProposalIds;
             state.prevMatchKeys = currentMatchKeys;
         }
+
+        // Persist known IDs so restarts detect proposals/matches created during downtime
+        await firestoreDb.collection('botRegistrations').doc(teamId).update({
+            knownProposalIds: [...state.prevProposalIds],
+            knownMatchKeys: [...state.prevMatchKeys],
+        });
     } catch (err) {
         logger.warn('Failed to handle event message', {
             teamId, error: err instanceof Error ? err.message : String(err),
