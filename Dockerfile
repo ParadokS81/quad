@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY patches/ patches/
 RUN npm ci
 
 COPY tsconfig.json ./
