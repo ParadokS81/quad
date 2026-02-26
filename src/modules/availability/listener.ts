@@ -998,11 +998,13 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     eventMessageId: state.eventMessageId,
                     eventSourceIds: [...state.eventSourceIds],
                 });
-            } else if (state.eventMessageId && state.eventSourceIds.size > 0) {
+            } else if (state.eventMessageId) {
                 // No new events — check if the source proposal/match is still active
-                const stillActive = [...state.eventSourceIds].some(id =>
-                    currentProposalIds.has(id) || currentMatchKeys.has(id),
-                );
+                const stillActive = state.eventSourceIds.size > 0
+                    ? [...state.eventSourceIds].some(id =>
+                        currentProposalIds.has(id) || currentMatchKeys.has(id))
+                    // Legacy: no tracked source IDs — clean up if nothing is active at all
+                    : (currentProposalIds.size > 0 || currentMatchKeys.size > 0);
                 if (!stillActive) {
                     await deleteMessages(botClient, state.channelId, [state.eventMessageId]);
                     state.eventMessageId = null;
