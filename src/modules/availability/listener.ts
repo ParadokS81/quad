@@ -55,12 +55,14 @@ interface TeamState {
     activeProposals: ActiveProposalDisplay[];
     matchMessageIds: string[];
     proposalMessageIds: string[];
-    // Event message — rolling "last N events" line at bottom of #schedule
+    // Event message — latest event notification at bottom of #schedule
     eventMessageId: string | null;
-    recentEvents: string[];          // last 3 event lines (newest first)
+    recentEvents: string[];
     prevProposalIds: Set<string>;
     prevMatchKeys: Set<string>;      // "slotId:opponentId" composite keys
     isInitialRender: boolean;
+    // IDs of proposals/matches that triggered the current event message (for cleanup)
+    eventSourceIds: Set<string>;
 }
 
 const activeTeams = new Map<string, TeamState>();
@@ -315,6 +317,7 @@ export async function startTeamListener(
         // Only skip events on first-ever setup (no persisted state).
         // When persisted sets exist, we can detect proposals created during downtime.
         isInitialRender: storedKnownProposalIds === null,
+        eventSourceIds: new Set(),
     };
 
     activeTeams.set(teamId, state);
@@ -959,6 +962,8 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             if (newEventLines.length > 0) {
                 // Keep only the latest event
                 state.recentEvents = [...newEventLines, ...state.recentEvents].slice(0, MAX_RECENT_EVENTS);
+                // Track which proposals/matches triggered this event (for cleanup)
+                state.eventSourceIds = new Set([...newProposals, ...newMatches]);
 
                 // Delete old event message
                 if (state.eventMessageId) {
@@ -990,6 +995,21 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                 await firestoreDb.collection('botRegistrations').doc(teamId).update({
                     eventMessageId: state.eventMessageId,
                 });
+            } else if (state.eventMessageId && state.eventSourceIds.size > 0) {
+                // No new events — check if the source proposal/match is still active
+                const stillActive = [...state.eventSourceIds].some(id =>
+                    currentProposalIds.has(id) || currentMatchKeys.has(id),
+                );
+                if (!stillActive) {
+                    await deleteMessages(botClient, state.channelId, [state.eventMessageId]);
+                    state.eventMessageId = null;
+                    state.recentEvents = [];
+                    state.eventSourceIds.clear();
+                    await firestoreDb.collection('botRegistrations').doc(teamId).update({
+                        eventMessageId: null,
+                    });
+                    logger.info('Cleaned up stale event message', { teamId });
+                }
             }
 
             state.prevProposalIds = currentProposalIds;
