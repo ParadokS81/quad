@@ -94,11 +94,12 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
         const eventMessageId = (data.eventMessageId as string | null) ?? null;
         const knownProposalIds = (data.knownProposalIds as string[] | undefined) ?? null;
         const knownMatchKeys = (data.knownMatchKeys as string[] | undefined) ?? null;
+        const eventSourceIds = (data.eventSourceIds as string[] | undefined) ?? [];
 
         if (!channelId) continue;
 
         try {
-            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds, eventMessageId, knownProposalIds, knownMatchKeys);
+            await startTeamListener(teamId, channelId, messageId, nextWeekMessageId, matchMessageIds, proposalMessageIds, eventMessageId, knownProposalIds, knownMatchKeys, eventSourceIds);
         } catch (err) {
             logger.error('Failed to start availability listener for team', {
                 teamId, error: err instanceof Error ? err.message : String(err),
@@ -270,6 +271,7 @@ export async function startTeamListener(
     storedEventMessageId: string | null = null,
     storedKnownProposalIds: string[] | null = null,
     storedKnownMatchKeys: string[] | null = null,
+    storedEventSourceIds: string[] = [],
 ): Promise<void> {
     if (!firestoreDb || !botClient) return;
 
@@ -317,7 +319,7 @@ export async function startTeamListener(
         // Only skip events on first-ever setup (no persisted state).
         // When persisted sets exist, we can detect proposals created during downtime.
         isInitialRender: storedKnownProposalIds === null,
-        eventSourceIds: new Set(),
+        eventSourceIds: new Set(storedEventSourceIds),
     };
 
     activeTeams.set(teamId, state);
@@ -994,6 +996,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                 }
                 await firestoreDb.collection('botRegistrations').doc(teamId).update({
                     eventMessageId: state.eventMessageId,
+                    eventSourceIds: [...state.eventSourceIds],
                 });
             } else if (state.eventMessageId && state.eventSourceIds.size > 0) {
                 // No new events — check if the source proposal/match is still active
@@ -1007,6 +1010,7 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
                     state.eventSourceIds.clear();
                     await firestoreDb.collection('botRegistrations').doc(teamId).update({
                         eventMessageId: null,
+                        eventSourceIds: [],
                     });
                     logger.info('Cleaned up stale event message', { teamId });
                 }
