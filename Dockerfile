@@ -22,7 +22,7 @@ RUN npx tsc
 FROM node:22-slim AS python-deps
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv python3-dev g++ \
+    python3 python3-pip python3-venv python3-dev g++ libbz2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/whisper-venv
