@@ -34,7 +34,7 @@ RUN pip install --no-cache-dir faster-whisper nvidia-cublas-cu12 nvidia-cudnn-cu
 FROM node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg python3 libfontconfig1 \
+    ffmpeg python3 libfontconfig1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built Python venv (includes zeroc-ice + faster-whisper compiled in python-deps stage)
