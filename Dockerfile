@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m venv /opt/whisper-venv
 ENV PATH="/opt/whisper-venv/bin:$PATH"
 
-RUN pip install --no-cache-dir faster-whisper nvidia-cublas-cu12 nvidia-cudnn-cu12
+RUN pip install --no-cache-dir faster-whisper nvidia-cublas-cu12 nvidia-cudnn-cu12 zeroc-ice
 
 # CUDA runtime libs installed by pip need to be on LD_LIBRARY_PATH for CTranslate2
 ENV LD_LIBRARY_PATH="/opt/whisper-venv/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/whisper-venv/lib/python3.11/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}"
@@ -45,8 +45,10 @@ COPY src/modules/processing/knowledge/ dist/modules/processing/knowledge/
 # Copy Inter font files for canvas rendering
 COPY fonts/ fonts/
 
-# Copy Python transcription script
+# Copy Python scripts (transcription + Murmur ICE sidecar)
 COPY scripts/transcribe.py scripts/transcribe.py
+COPY scripts/mumble-ice.py scripts/mumble-ice.py
+COPY scripts/MumbleServer.ice scripts/MumbleServer.ice
 
 # Pre-download Whisper model so it's baked into the image
 ARG WHISPER_MODEL=small

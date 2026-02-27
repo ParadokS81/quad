@@ -39,3 +39,7 @@ services:
       MUMBLE_CONFIG_SERVERPASSWORD: "${MUMBLE_SERVER_PASSWORD:-}"
       MUMBLE_CONFIG_REGISTERNAME: "QuakeWorld Voice"
       MUMBLE_CONFIG_ALLOWRECORDING: "true"
+      MUMBLE_CONFIG_ICE: "tcp -h 0.0.0.0 -p 6502"
+      MUMBLE_CONFIG_ICESECRETWRITE: "${MUMBLE_ICE_SECRET}"
+    expose:
+      - "6502"   # ICE API — internal Docker network only, not public

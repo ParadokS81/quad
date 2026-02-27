@@ -8,6 +8,7 @@ import { standinModule } from './modules/standin/index.js';
 import { registrationModule } from './modules/registration/index.js';
 import { schedulerModule } from './modules/scheduler/index.js';
 import { availabilityModule } from './modules/availability/index.js';
+import { mumbleModule } from './modules/mumble/index.js';
 import { isRecording, getActiveSessions } from './modules/recording/commands/record.js';
 
 const config = loadConfig();
@@ -56,8 +57,14 @@ async function handleShutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));
 
+// Conditionally include mumble module
+const modules = [recordingModule, processingModule, standinModule, registrationModule, schedulerModule, availabilityModule];
+if (process.env.MUMBLE_HOST) {
+  modules.push(mumbleModule);
+}
+
 // Start with all modules
-start(config, [recordingModule, processingModule, standinModule, registrationModule, schedulerModule, availabilityModule]).catch((err) => {
+start(config, modules).catch((err) => {
   logger.error('Failed to start bot', {
     error: err instanceof Error ? err.message : String(err),
   });
