@@ -581,6 +581,7 @@ async function refreshProposals(
             gameType: (data.gameType as 'official' | 'practice') ?? 'practice',
             viableSlots: computeViableSlots(teamAvail, oppAvail, ourMin, oppMin, ourStandin, oppStandin),
             opponentLogoUrl: opponentLogoMap.get(oppId) ?? null,
+            isIncoming: !isProposer,
         });
     }
 
@@ -955,7 +956,9 @@ async function renderAndUpdateMessage(teamId: string): Promise<void> {
             }
             for (const proposalId of newProposals) {
                 const proposal = state.activeProposals.find(p => p.proposalId === proposalId);
-                if (proposal) {
+                // Only announce incoming proposals (someone challenged us)
+                // Outgoing proposals (we sent them) just render cards silently
+                if (proposal && proposal.isIncoming) {
                     const typeLabel = proposal.gameType === 'official' ? 'OFFICIAL' : 'PRACTICE';
                     newEventLines.push(`\u{1F4E8} ${typeLabel} challenge from **${proposal.opponentTag} ${proposal.opponentName}**`);
                 }

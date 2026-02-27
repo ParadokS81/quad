@@ -49,4 +49,5 @@ export interface ActiveProposalDisplay {
     gameType: 'official' | 'practice';
     viableSlots: number;
     opponentLogoUrl: string | null;
+    isIncoming: boolean;         // true = someone challenged us, false = we sent it
 }
