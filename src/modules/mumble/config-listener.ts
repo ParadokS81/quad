@@ -103,7 +103,7 @@ export class MumbleConfigListener {
         channelId: channel.channelId,
         channelName: channel.channelName,
         channelPath: channel.channelPath,
-        serverAddress: process.env.MUMBLE_HOST || '83.172.66.214',
+        serverAddress: process.env.MUMBLE_PUBLIC_HOST || process.env.MUMBLE_HOST || '83.172.66.214',
         serverPort: parseInt(process.env.MUMBLE_PORT || '64738', 10),
         status: 'active',
         activatedAt: new Date(),
