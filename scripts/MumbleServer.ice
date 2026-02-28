@@ -30,6 +30,8 @@ module Murmur {
         int deny;         // Bitfield of denied permissions
     };
 
+    sequence<int> IntList;
+
     /**
      * Channel group.
      */
@@ -42,8 +44,6 @@ module Murmur {
         IntList remove;
         IntList members;
     };
-
-    sequence<int> IntList;
     dictionary<UserInfo, string> UserInfoMap;
     dictionary<int, string> NameMap;
     sequence<ACL> ACLList;
