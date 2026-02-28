@@ -38,11 +38,12 @@ module Murmur {
         bool inherited;
         bool inherit;
         bool inheritable;
-        sequence<int> add;
-        sequence<int> remove;
-        sequence<int> members;
+        IntList add;
+        IntList remove;
+        IntList members;
     };
 
+    sequence<int> IntList;
     dictionary<UserInfo, string> UserInfoMap;
     dictionary<int, string> NameMap;
     sequence<ACL> ACLList;
