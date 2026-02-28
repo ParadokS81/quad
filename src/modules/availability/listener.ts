@@ -68,6 +68,7 @@ interface TeamState {
 const activeTeams = new Map<string, TeamState>();
 let firestoreDb: Firestore | null = null;
 let botClient: Client | null = null;
+let registrationWatcher: (() => void) | null = null;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -108,12 +109,40 @@ export async function startAllListeners(db: Firestore, client: Client): Promise<
     }
 
     logger.info('Availability listeners started', { teamCount: activeTeams.size });
+
+    // Watch for registrations that get a scheduleChannelId set after boot
+    // (e.g. user creates channel manually and picks it in MatchScheduler).
+    registrationWatcher = db.collection('botRegistrations')
+        .where('status', '==', 'active')
+        .onSnapshot((snapshot) => {
+            for (const change of snapshot.docChanges()) {
+                if (change.type !== 'modified') continue;
+                const teamId = change.doc.id;
+                if (activeTeams.has(teamId)) continue; // already tracked
+                const channelId = change.doc.data().scheduleChannelId as string | null;
+                if (!channelId) continue;
+                logger.info('New schedule channel detected, starting listener', { teamId, channelId });
+                startTeamListener(teamId, channelId, null, null).catch(err => {
+                    logger.error('Failed to start listener for newly configured team', {
+                        teamId, error: err instanceof Error ? err.message : String(err),
+                    });
+                });
+            }
+        }, (err) => {
+            logger.error('Registration watcher error', {
+                error: err instanceof Error ? err.message : String(err),
+            });
+        });
 }
 
 /**
  * Stop all listeners. Called from module onShutdown.
  */
 export function stopAllListeners(): void {
+    if (registrationWatcher) {
+        registrationWatcher();
+        registrationWatcher = null;
+    }
     for (const teamId of [...activeTeams.keys()]) {
         teardownTeam(teamId);
     }
