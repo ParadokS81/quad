@@ -20,7 +20,7 @@ import { logger } from '../../core/logger.js';
 // Resolve path to the Python sidecar script, relative to this compiled file.
 // In Docker: /app/dist/modules/mumble/ice-client.js → /app/scripts/mumble-ice.py
 const __filename = fileURLToPath(import.meta.url);
-const PROJECT_ROOT = join(__filename, '..', '..', '..', '..', '..');
+const PROJECT_ROOT = join(__filename, '..', '..', '..', '..');
 const SIDECAR_PATH = join(PROJECT_ROOT, 'scripts', 'mumble-ice.py');
 
 /** Murmur channel permission bit flags. */
