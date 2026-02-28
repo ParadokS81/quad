@@ -41,6 +41,8 @@ def create_communicator(host: str, port: int, secret: str) -> Ice.Communicator:
     # Reduce logging noise
     props.setProperty('Ice.Warn.Connections', '0')
     props.setProperty('Ice.ACM.Client', '0')
+    # Enable implicit context so we can attach the ICE write secret
+    props.setProperty('Ice.ImplicitContext', 'Shared')
 
     init_data = Ice.InitializationData()
     init_data.properties = props
