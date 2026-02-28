@@ -32,7 +32,7 @@ import Ice
 # via slice2py (bundled with zeroc-ice) and registers the module globally.
 _SCRIPT_DIR = Path(__file__).parent
 Ice.loadSlice(str(_SCRIPT_DIR / 'MumbleServer.ice'))
-import Murmur  # noqa: E402 — must come after loadSlice
+import MumbleServer  # noqa: E402 — must come after loadSlice
 
 
 def create_communicator(host: str, port: int, secret: str) -> Ice.Communicator:
@@ -54,13 +54,13 @@ def create_communicator(host: str, port: int, secret: str) -> Ice.Communicator:
     return communicator
 
 
-def dispatch(server: Murmur.ServerPrx, method: str, params: dict) -> object:
+def dispatch(server: MumbleServer.ServerPrx, method: str, params: dict) -> object:
     """Route a JSON-RPC method call to the corresponding Murmur ICE operation."""
 
     if method == 'registerUser':
         info = {
-            Murmur.UserInfo.UserName: params['username'],
-            Murmur.UserInfo.UserPassword: params['password'],
+            MumbleServer.UserInfo.UserName: params['username'],
+            MumbleServer.UserInfo.UserPassword: params['password'],
         }
         user_id = server.registerUser(info)
         return user_id  # integer
@@ -73,9 +73,9 @@ def dispatch(server: Murmur.ServerPrx, method: str, params: dict) -> object:
         updates = params.get('updates', {})
         info = {}
         if 'username' in updates:
-            info[Murmur.UserInfo.UserName] = updates['username']
+            info[MumbleServer.UserInfo.UserName] = updates['username']
         if 'password' in updates:
-            info[Murmur.UserInfo.UserPassword] = updates['password']
+            info[MumbleServer.UserInfo.UserPassword] = updates['password']
         server.updateRegistration(int(params['userId']), info)
         return None
 
@@ -87,7 +87,7 @@ def dispatch(server: Murmur.ServerPrx, method: str, params: dict) -> object:
     elif method == 'setACL':
         acls = []
         for a in params.get('acls', []):
-            acl = Murmur.ACL()
+            acl = MumbleServer.ACL()
             acl.applyHere = bool(a.get('applyHere', True))
             acl.applySubs = bool(a.get('applySubs', True))
             acl.inherited = bool(a.get('inherited', False))
@@ -150,9 +150,9 @@ def main() -> None:
         communicator = create_communicator(host, port, secret)
 
         base = communicator.stringToProxy(f'Meta:tcp -h {host} -p {port}')
-        meta = Murmur.MetaPrx.checkedCast(base)
+        meta = MumbleServer.MetaPrx.checkedCast(base)
         if not meta:
-            raise RuntimeError('Cannot cast ICE proxy to Murmur.Meta — wrong host/port?')
+            raise RuntimeError('Cannot cast ICE proxy to MumbleServer.Meta — wrong host/port?')
 
         server = meta.getServer(1)
         if not server:
@@ -177,9 +177,9 @@ def main() -> None:
                 result = dispatch(server, method, params)
                 print(json.dumps({'id': req_id, 'result': result}), flush=True)
 
-            except (Murmur.InvalidUserException, Murmur.InvalidChannelException) as e:
+            except (MumbleServer.InvalidUserException, MumbleServer.InvalidChannelException) as e:
                 print(json.dumps({'id': req_id, 'error': f'Murmur: {type(e).__name__}'}), flush=True)
-            except Murmur.InvalidSecretException:
+            except MumbleServer.InvalidSecretException:
                 print(json.dumps({'id': req_id, 'error': 'Murmur: InvalidSecret — check MUMBLE_ICE_SECRET'}), flush=True)
             except Exception as e:
                 print(json.dumps({'id': req_id, 'error': str(e)}), flush=True)

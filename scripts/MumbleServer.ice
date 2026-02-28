@@ -3,7 +3,7 @@
 // Based on the Murmur 1.5.x MumbleServer.ice interface.
 // Full interface: https://github.com/mumble-voip/mumble/blob/master/src/murmur/MumbleServer.ice
 
-module Murmur {
+module MumbleServer {
     /**
      * User information keys used in UserInfoMap.
      */
@@ -50,11 +50,11 @@ module Murmur {
     sequence<Group> GroupList;
 
     // Exceptions
-    exception MurmurException {};
-    exception InvalidChannelException extends MurmurException {};
-    exception InvalidUserException extends MurmurException {};
-    exception ServerBootedException extends MurmurException {};
-    exception InvalidSecretException extends MurmurException {};
+    exception ServerException {};
+    exception InvalidChannelException extends ServerException {};
+    exception InvalidUserException extends ServerException {};
+    exception ServerBootedException extends ServerException {};
+    exception InvalidSecretException extends ServerException {};
     exception InvalidServerException {};
 
     /**
