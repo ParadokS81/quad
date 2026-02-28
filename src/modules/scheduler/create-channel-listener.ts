@@ -91,12 +91,18 @@ export async function createScheduleChannel(
     const pid = ch!.parentId;
     parentCounts.set(pid, (parentCounts.get(pid) ?? 0) + 1);
   }
+  // Sort categories by channel count descending — try most populated first,
+  // fall back to others if the bot lacks permissions there
+  const sortedParents = [...parentCounts.entries()]
+    .filter(([pid]) => pid !== null)
+    .sort((a, b) => b[1] - a[1]);
+
   let bestParent: string | null = null;
-  let bestCount = 0;
-  for (const [pid, count] of parentCounts) {
-    if (pid !== null && count > bestCount) {
+  for (const [pid] of sortedParents) {
+    const cat = channels.get(pid!);
+    if (cat && me.permissionsIn(cat).has(PermissionFlagsBits.ManageChannels)) {
       bestParent = pid;
-      bestCount = count;
+      break;
     }
   }
 
@@ -107,6 +113,7 @@ export async function createScheduleChannel(
     sendMessages: me.permissions.has(PermissionFlagsBits.SendMessages),
     embedLinks: me.permissions.has(PermissionFlagsBits.EmbedLinks),
     attachFiles: me.permissions.has(PermissionFlagsBits.AttachFiles),
+    selectedCategory: bestParent,
   });
 
   // Read-only channel: deny messaging for @everyone, allow for bot.

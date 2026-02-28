@@ -141,7 +141,7 @@ async function handleStopAll(
   discordUserId: string,
 ): Promise<void> {
   const db = getDb();
-  const schedulerUrl = process.env.SCHEDULER_URL || 'https://matchscheduler.web.app';
+  const schedulerUrl = process.env.SCHEDULER_URL || 'https://scheduler.quake.world';
 
   await db.collection('standin_preferences').doc(discordUserId).set(
     {

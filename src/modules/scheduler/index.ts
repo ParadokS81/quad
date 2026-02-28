@@ -10,12 +10,12 @@
  * Requires: FIREBASE_SERVICE_ACCOUNT env var pointing to a service account JSON.
  */
 
-import { type Client, type ChatInputCommandInteraction } from 'discord.js';
+import { type Client, type ChatInputCommandInteraction, Events } from 'discord.js';
 import { type BotModule } from '../../core/module.js';
 import { logger } from '../../core/logger.js';
 import { initFirestore } from '../standin/firestore.js';
 import { startListening, stopListening } from './listener.js';
-import { syncAllGuildChannels } from './channels.js';
+import { syncAllGuildChannels, syncGuildChannels } from './channels.js';
 import { startCreateChannelListener, stopCreateChannelListener } from './create-channel-listener.js';
 
 export const schedulerModule: BotModule = {
@@ -28,8 +28,30 @@ export const schedulerModule: BotModule = {
     // No commands to handle
   },
 
-  registerEvents(_client: Client): void {
-    // No button interactions needed for v1
+  registerEvents(client: Client): void {
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT) return;
+
+    const db = initFirestore();
+
+    // Re-sync available channels when Discord channels change.
+    // syncGuildChannels bails early for guilds without active registrations.
+    const debouncedSync = new Map<string, NodeJS.Timeout>();
+    const scheduleSync = (guildId: string) => {
+      const existing = debouncedSync.get(guildId);
+      if (existing) clearTimeout(existing);
+      debouncedSync.set(guildId, setTimeout(() => {
+        debouncedSync.delete(guildId);
+        syncGuildChannels(db, client, guildId).catch(err => {
+          logger.warn('Channel sync on Discord event failed', {
+            guildId, error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }, 2000));
+    };
+
+    client.on(Events.ChannelCreate, ch => { if (ch.guildId) scheduleSync(ch.guildId); });
+    client.on(Events.ChannelDelete, ch => { if ('guildId' in ch && ch.guildId) scheduleSync(ch.guildId); });
+    client.on(Events.ChannelUpdate, (_old, ch) => { if ('guildId' in ch && ch.guildId) scheduleSync(ch.guildId); });
   },
 
   async onReady(client: Client): Promise<void> {

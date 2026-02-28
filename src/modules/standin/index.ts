@@ -8,7 +8,7 @@
  * 4. Sends confirmation/rejection DMs when a standin is chosen
  *
  * Requires: FIREBASE_SERVICE_ACCOUNT env var pointing to a service account JSON.
- * Optional: SCHEDULER_URL for the deep-linked preferences button (default: https://matchscheduler.web.app)
+ * Optional: SCHEDULER_URL for the deep-linked preferences button (default: https://scheduler.quake.world)
  */
 
 import { Client, Events, type ChatInputCommandInteraction } from 'discord.js';

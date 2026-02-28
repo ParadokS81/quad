@@ -22,7 +22,7 @@ import { createScheduleChannel } from '../scheduler/create-channel-listener.js';
 import { syncGuildChannels } from '../scheduler/channels.js';
 import { startTeamListener } from '../availability/listener.js';
 
-const SCHEDULER_URL = process.env.SCHEDULER_URL || 'https://matchscheduler.web.app';
+const SCHEDULER_URL = process.env.SCHEDULER_URL || 'https://scheduler.quake.world';
 
 // Per-session throttle — only DM each team once per bot process run to avoid spam
 const permErrorNotifiedTeams = new Set<string>();
@@ -527,7 +527,7 @@ export async function handleRegisterButton(interaction: ButtonInteraction): Prom
         teamId, error: msg,
       });
       await interaction.editReply({
-        content: `Failed to create the channel: ${msg}\nYou can try again from [MatchScheduler](${SCHEDULER_URL}/#/settings/discord).`,
+        content: `Failed to create the channel: ${msg}\nCreate a **#schedule** channel manually and select it at [MatchScheduler](${SCHEDULER_URL}/#/settings/discord).`,
       });
     }
     return;

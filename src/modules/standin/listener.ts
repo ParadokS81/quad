@@ -79,7 +79,7 @@ async function handleNewRequest(
     candidates: Object.keys(data.candidates).length,
   });
 
-  const schedulerUrl = process.env.SCHEDULER_URL || 'https://matchscheduler.web.app';
+  const schedulerUrl = process.env.SCHEDULER_URL || 'https://scheduler.quake.world';
 
   for (const [discordUserId, candidate] of Object.entries(data.candidates)) {
     // Skip if we already have a response entry (e.g. bot restarted and re-read)
