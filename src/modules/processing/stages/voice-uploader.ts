@@ -46,7 +46,7 @@ async function resolvePlayerNames(
   if (!registration) {
     // No registration — use audio-splitter names as-is, all unresolved
     for (const p of players) {
-      result.set(p.discordUserId || p.discordUsername, {
+      result.set(p.discordUserId ?? p.discordUsername ?? p.name, {
         playerName: p.name,
         resolved: false,
       });
@@ -85,6 +85,14 @@ async function resolvePlayerNames(
   // Resolve each player
   for (const p of players) {
     const discordId = p.discordUserId;
+    // Mumble recordings have no discordUserId — use player name as key
+    const mapKey = discordId ?? p.discordUsername ?? p.name;
+
+    if (!discordId) {
+      // No Discord ID (e.g. Mumble recording) — name is already the QW name
+      result.set(mapKey, { playerName: p.name, resolved: true });
+      continue;
+    }
 
     // 1. Team roster match
     const rosterName = rosterNames.get(discordId);
@@ -160,6 +168,7 @@ export async function uploadVoiceRecordings(
   segments: SegmentMetadata[],
   teamTag: string,
   guildId: string,
+  source: string,
   sessionId: string,
   preResolvedRegistration?: BotRegistration | null,
 ): Promise<UploadResult> {
@@ -257,7 +266,7 @@ export async function uploadVoiceRecordings(
       }> = [];
 
       for (const player of segment.players) {
-        const resolved = resolvedNames.get(player.discordUserId || player.discordUsername);
+        const resolved = resolvedNames.get(player.discordUserId ?? player.discordUsername ?? player.name);
         const playerName = resolved?.playerName || player.name;
         const wasResolved = resolved?.resolved || false;
 
@@ -294,8 +303,8 @@ export async function uploadVoiceRecordings(
         });
 
         const trackEntry: typeof tracks[number] = {
-          discordUserId: player.discordUserId || '',
-          discordUsername: player.discordUsername,
+          discordUserId: player.discordUserId ?? '',
+          discordUsername: player.discordUsername ?? '',
           playerName,
           resolved: wasResolved,
           storagePath,
@@ -328,6 +337,7 @@ export async function uploadVoiceRecordings(
         teamTag: effectiveTeamTag.toLowerCase(),
         visibility,
         source: 'firebase_storage',
+        recordingSource: source === 'mumble' ? 'mumble' : 'discord',
         tracks,
         mapName: segment.map,
         recordedAt: new Date(segment.matchData.timestamp),

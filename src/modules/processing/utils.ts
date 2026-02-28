@@ -44,14 +44,16 @@ export async function loadKnowledge<T = Record<string, unknown>>(relativePath: s
  * Priority: playerNameMap > discordDisplayName > discordUsername
  */
 export function resolvePlayerName(
-  discordUsername: string,
-  discordDisplayName: string,
+  discordUsername: string | null | undefined,
+  discordDisplayName: string | null | undefined,
   playerNameMap: Record<string, string>,
 ): string {
-  const mapped = playerNameMap[discordUsername.toLowerCase()];
-  if (mapped) return mapped;
+  if (discordUsername) {
+    const mapped = playerNameMap[discordUsername.toLowerCase()];
+    if (mapped) return mapped;
+  }
   if (discordDisplayName) return discordDisplayName;
-  return discordUsername;
+  return discordUsername || 'unknown';
 }
 
 /**

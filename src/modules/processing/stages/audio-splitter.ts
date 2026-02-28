@@ -379,7 +379,7 @@ export async function splitByTimestamps(
   const sessionMeta = {
     recording_start_time: session.recording_start_time,
     recording_id: session.recording_id,
-    guild_name: session.guild.name,
+    guild_name: session.guild?.name ?? session.team?.tag ?? 'mumble',
     channel_name: session.channel.name,
     tracks: session.tracks.map((t) => ({
       track_number: t.track_number,

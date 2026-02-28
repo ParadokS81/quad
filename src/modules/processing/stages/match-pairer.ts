@@ -54,12 +54,19 @@ export function pairMatches(
   const teamTag = options?.teamTag?.toLowerCase() ?? '';
   const knownPlayers = options?.knownPlayers ?? {};
 
-  // Resolve recording tracks to QW names using knownPlayers mapping
+  // Resolve recording tracks to QW names.
+  // Mumble source: username IS the QW name (registered via ICE with QW display name).
+  // Discord source: look up via knownPlayers[discordUserId] mapping.
+  const isMumbleSource = session.source === 'mumble';
   const resolvedQwNames = new Set<string>();
   for (const track of session.tracks) {
-    const qwName = knownPlayers[track.discord_user_id];
-    if (qwName) {
-      resolvedQwNames.add(qwName.toLowerCase());
+    if (isMumbleSource && track.mumble_username) {
+      resolvedQwNames.add(track.mumble_username.toLowerCase());
+    } else if (track.discord_user_id) {
+      const qwName = knownPlayers[track.discord_user_id];
+      if (qwName) {
+        resolvedQwNames.add(qwName.toLowerCase());
+      }
     }
   }
 
@@ -253,13 +260,21 @@ function scoreConfidence(
   // Hub player names have QW decorations (e.g., "• razor", "tco.........axe")
   // Use substring matching: check if hub name contains any known name
   const sessionNames = new Set<string>();
+  const isMumble = session.source === 'mumble';
   for (const track of session.tracks) {
-    // Resolved QW names from knownPlayers (most reliable — stable nicks)
-    const qwName = knownPlayers[track.discord_user_id];
-    if (qwName) sessionNames.add(normalizeName(qwName));
-    // Discord names as fallback
-    sessionNames.add(normalizeName(track.discord_username));
-    sessionNames.add(normalizeName(track.discord_display_name));
+    if (isMumble && track.mumble_username) {
+      // Mumble: username IS the QW name
+      sessionNames.add(normalizeName(track.mumble_username));
+    } else {
+      // Discord: resolved QW names from knownPlayers (most reliable — stable nicks)
+      if (track.discord_user_id) {
+        const qwName = knownPlayers[track.discord_user_id];
+        if (qwName) sessionNames.add(normalizeName(qwName));
+      }
+      // Discord names as fallback
+      if (track.discord_username) sessionNames.add(normalizeName(track.discord_username));
+      if (track.discord_display_name) sessionNames.add(normalizeName(track.discord_display_name));
+    }
   }
 
   const matchPlayerNorms = (match.players ?? [])

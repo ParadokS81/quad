@@ -17,18 +17,22 @@ export interface SessionMetadata {
   recording_id: string;
   source: string;
   source_version: string;
-  guild: { id: string; name: string };
+  guild: { id: string; name: string } | null;
   channel: { id: string; name: string };
-  team?: { tag: string; name: string };
+  team?: { tag: string; name: string; teamId?: string };
   source_text_channel_id?: string;
   tracks: SessionTrack[];
 }
 
 export interface SessionTrack {
   track_number: number;
-  discord_user_id: string;
-  discord_username: string;
-  discord_display_name: string;
+  // Discord fields (present for source="quad")
+  discord_user_id: string | null;
+  discord_username: string | null;
+  discord_display_name?: string | null;
+  // Mumble fields (present for source="mumble")
+  mumble_session_id?: number;
+  mumble_username?: string | null;
   joined_at: string;
   left_at: string;
   audio_file: string;
@@ -141,8 +145,8 @@ export interface SegmentMetadata {
 
 export interface SegmentPlayer {
   name: string;
-  discordUserId: string;
-  discordUsername: string;
+  discordUserId: string | null;
+  discordUsername: string | null;
   audioFile: string;
   duration: number;
   /** Number of decode errors found by ffmpegVerify. 0 = clean. */
@@ -159,8 +163,8 @@ export interface VolumeStats {
 
 /** Track skipped during pipeline processing. */
 export interface SkippedTrack {
-  discordUserId: string;
-  discordUsername: string;
+  discordUserId: string | null;
+  discordUsername: string | null;
   reason: 'silent';
   maxVolumeDb: number;
 }

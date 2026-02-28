@@ -177,32 +177,58 @@ export async function runFastPipeline(
     let teamTag = session.team?.tag ?? '';
     let knownPlayers: Record<string, string> = {};
     let registration: BotRegistration | null = null;
-    try {
-      const registrations = await getRegistrationsForGuild(session.guild.id);
-      if (registrations.length === 1) {
-        registration = registrations[0];
-      } else if (registrations.length > 1) {
-        const sourceChannel = session.source_text_channel_id;
-        if (sourceChannel) {
-          registration = registrations.find(r => r.registeredChannelId === sourceChannel) || null;
-        }
-      }
-      if (registration) {
-        teamTag = registration.teamTag || teamTag;
-        knownPlayers = registration.knownPlayers || {};
-        logger.info('Registration found for guild', {
+
+    if (session.source === 'mumble') {
+      // Mumble recordings have no Discord guild — use team info from session metadata directly.
+      // The teamId in session.team maps to the same Firestore team doc as a Discord registration.
+      if (session.team?.teamId) {
+        registration = {
+          teamId: session.team.teamId,
+          teamTag: session.team.tag ?? teamTag,
+          teamName: session.team.name ?? '',
+          guildId: '',
+          guildName: '',
+          knownPlayers: {},
+          registeredChannelId: null,
+          registeredCategoryId: null,
+          registeredCategoryName: null,
+        };
+        teamTag = registration.teamTag;
+        logger.info('Mumble session — using team from metadata', {
+          teamId: registration.teamId,
           teamTag,
-          knownPlayerCount: Object.keys(knownPlayers).length,
         });
       } else {
-        logger.warn('No active registration for guild — match filtering will be limited', {
-          guildId: session.guild.id,
+        logger.warn('Mumble session has no teamId in metadata — match filtering will be limited');
+      }
+    } else {
+      try {
+        const registrations = await getRegistrationsForGuild(session.guild!.id);
+        if (registrations.length === 1) {
+          registration = registrations[0];
+        } else if (registrations.length > 1) {
+          const sourceChannel = session.source_text_channel_id;
+          if (sourceChannel) {
+            registration = registrations.find(r => r.registeredChannelId === sourceChannel) || null;
+          }
+        }
+        if (registration) {
+          teamTag = registration.teamTag || teamTag;
+          knownPlayers = registration.knownPlayers || {};
+          logger.info('Registration found for guild', {
+            teamTag,
+            knownPlayerCount: Object.keys(knownPlayers).length,
+          });
+        } else {
+          logger.warn('No active registration for guild — match filtering will be limited', {
+            guildId: session.guild!.id,
+          });
+        }
+      } catch (err) {
+        logger.warn('Failed to look up registration — continuing with session metadata only', {
+          error: err instanceof Error ? err.message : String(err),
         });
       }
-    } catch (err) {
-      logger.warn('Failed to look up registration — continuing with session metadata only', {
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
 
     // Stage 2: Query QW Hub
@@ -296,8 +322,8 @@ export async function runFastPipeline(
     if (segments.length > 0) {
       try {
         const { uploadVoiceRecordings } = await import('./stages/voice-uploader.js');
-        const guildId = session.guild.id;
-        const uploadResult = await uploadVoiceRecordings(segments, teamTag, guildId, sessionId, registration);
+        const guildId = session.guild?.id ?? '';
+        const uploadResult = await uploadVoiceRecordings(segments, teamTag, guildId, session.source, sessionId, registration);
         if (uploadResult.uploaded > 0) {
           logger.info('Voice recordings uploaded to Firebase', { ...uploadResult });
 
