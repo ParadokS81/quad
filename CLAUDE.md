@@ -329,31 +329,34 @@ Full reference: see `DEPLOYMENT.md` in repo root.
 
 ### Server Details
 - **Host**: `83.172.66.214`, port `5555`
-- **User**: `qwvoice`
-- **SSH key**: `~/.ssh/qwvoice_key`
+- **User**: `dave`
+- **SSH alias**: `pinnaclepowerhouse` (configured in `~/.ssh/config`)
+- **SSH key**: `~/.ssh/id_ed25519`
 - **GPU**: NVIDIA RTX 4090 (24GB VRAM) — GPU-accelerated whisper with `device="auto"`
-- **Quad repo**: `/srv/qwvoice/quad/` (owned by `qwvoice`)
+- **Quad repo**: `/srv/qwvoice/quad/` (dave has group write access via `qwvoice` group)
 - **Recordings**: `/srv/qwvoice/quad/recordings/` (volume-mounted, survives rebuilds)
 - **Other services**: `qwvoice-whisper` + `ollama` at `/srv/qwvoice/docker/` (independent)
 
 ### SSH Access (full bash shell)
 ```bash
-ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214
+ssh pinnaclepowerhouse
 ```
 
 **Important**: Use `wsl bash -c` (NOT `-ic`) for SSH commands from the Windows/WSL environment:
 ```bash
-wsl bash -c "ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214 'command here'"
+wsl bash -c "ssh pinnaclepowerhouse 'command here'"
 ```
 
-### Sudo Permissions (NOPASSWD)
+### Container Management — qwvoice-ctl
+
+All Docker operations go through the `qwvoice-ctl` wrapper. No direct `docker` or `docker compose` access.
+
 ```bash
-sudo docker compose *              # Full compose control (up, down, logs, ps, exec, build)
-sudo docker images                 # List images
-sudo docker image prune -f         # Clean up dangling images
+sudo qwvoice-ctl /srv/qwvoice/quad <command>    # Quad bot
+sudo qwvoice-ctl /srv/qwvoice/docker <command>  # Whisper + Ollama
 ```
 
-The `qwvoice` user is NOT in the `docker` group — all docker commands require `sudo`.
+Commands: `up`, `down`, `restart`, `rebuild`, `logs`, `ps`, `pull`, `prune`
 
 ### Deploy Workflow (self-service, no Xerial needed)
 
@@ -366,8 +369,7 @@ The `qwvoice` user is NOT in the `docker` group — all docker commands require 
 git add ... && git commit && git push
 
 # 3. Deploy (one command)
-wsl bash -c "ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214 \
-  'cd /srv/qwvoice/quad && git pull && sudo docker compose up -d --build'"
+wsl bash -c "ssh pinnaclepowerhouse 'cd /srv/qwvoice/quad && git pull && sudo qwvoice-ctl /srv/qwvoice/quad rebuild'"
 ```
 
 Docker layer caching makes rebuilds fast (~15-30s) when only source code changed.
@@ -375,26 +377,26 @@ Docker layer caching makes rebuilds fast (~15-30s) when only source code changed
 ### Common Server Operations
 ```bash
 # View logs (live)
-ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml logs -f quad'
+ssh pinnaclepowerhouse 'sudo qwvoice-ctl /srv/qwvoice/quad logs -f'
 
 # View recent logs
-ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml logs --tail=50 quad'
+ssh pinnaclepowerhouse 'sudo qwvoice-ctl /srv/qwvoice/quad logs --tail=50'
 
 # Check status
-ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml ps'
+ssh pinnaclepowerhouse 'sudo qwvoice-ctl /srv/qwvoice/quad ps'
 
 # Restart (no rebuild — only picks up .env changes)
-ssh ... 'sudo docker compose -f /srv/qwvoice/quad/docker-compose.yml restart quad'
+ssh pinnaclepowerhouse 'sudo qwvoice-ctl /srv/qwvoice/quad restart'
 
 # Edit .env on server
-ssh ... 'nano /srv/qwvoice/quad/.env'
+ssh pinnaclepowerhouse 'nano /srv/qwvoice/quad/.env'
 
 # Download recordings
-scp -i ~/.ssh/qwvoice_key -P 5555 -r 'qwvoice@83.172.66.214:/srv/qwvoice/quad/recordings/SESSION_ID/processed/*' /tmp/
+scp -P 5555 -r 'dave@83.172.66.214:/srv/qwvoice/quad/recordings/SESSION_ID/processed/*' /tmp/
 ```
 
 ### Notes
-- Xerial manages OS-level config (sudoers, firewall, NVIDIA drivers). Routine deploys are self-service.
+- Xerial manages OS-level config (firewall, NVIDIA drivers). Routine deploys are self-service.
 - The bot is `Quake.World#7716` on Discord
 - Recordings are volume-mounted — they persist across container rebuilds
 - The `docker-compose.yml` includes GPU reservation — container won't start without NVIDIA GPU

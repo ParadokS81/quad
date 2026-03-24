@@ -12,11 +12,16 @@ import {
   stopRecording,
   performStop,
   fireParticipantChangeCallbacks,
+  setDiscordAutoRecord,
 } from './commands/record.js';
 import { initSessionTracker, cleanupInterruptedSessions, shutdownSessionTracker } from './firestore-tracker.js';
+import { DiscordAutoRecord } from './auto-record.js';
+import { sessionRegistry } from '../../shared/session-registry.js';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export const discordAutoRecord = new DiscordAutoRecord();
 
 export const recordingModule: BotModule = {
   name: 'recording',
@@ -54,7 +59,11 @@ export const recordingModule: BotModule = {
             const nonBotMembers = channel.members.filter((m) => !m.user.bot);
             channelSize = nonBotMembers.size;
             if (channelSize === 0) {
-              startIdleTimer(oldGuildId);
+              // Only start idle timer for manual sessions — auto-record has its own grace timer
+              const regSession = sessionRegistry.get(`discord:${oldGuildId}`);
+              if (!regSession || regSession.origin === 'manual') {
+                startIdleTimer(oldGuildId);
+              }
             }
             // Notify participant change
             fireParticipantChangeCallbacks(oldGuildId, nonBotMembers.map((m) => m.displayName));
@@ -102,6 +111,13 @@ export const recordingModule: BotModule = {
           });
         }
       }
+
+      // Auto-record: check if we should start/stop recording based on registered member presence
+      discordAutoRecord.onVoiceStateUpdate(oldState, newState).catch((err) => {
+        logger.error('DiscordAutoRecord voiceStateUpdate error', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     });
   },
 
@@ -139,6 +155,8 @@ export const recordingModule: BotModule = {
         const db = initFirestore();
         initSessionTracker(db);
         await cleanupInterruptedSessions();
+        discordAutoRecord.start(client, db);
+        setDiscordAutoRecord(discordAutoRecord);
       } catch (err) {
         logger.warn('Firestore session tracker not started — Firebase init failed', {
           error: err instanceof Error ? err.message : String(err),
@@ -150,6 +168,9 @@ export const recordingModule: BotModule = {
   },
 
   async onShutdown(): Promise<void> {
+    // Stop auto-record engine (Firestore listener + grace timers)
+    discordAutoRecord.stop();
+
     // Cancel all idle timers
     for (const [guildId] of idleTimers) {
       cancelIdleTimer(guildId);

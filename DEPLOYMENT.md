@@ -6,28 +6,52 @@
 |---|---|
 | **Host** | `83.172.66.214` |
 | **Port** | `5555` |
-| **User** | `qwvoice` |
-| **SSH key** | `~/.ssh/qwvoice_key` |
+| **User** | `dave` |
+| **SSH alias** | `pinnaclepowerhouse` (configured in `~/.ssh/config`) |
+| **SSH key** | `~/.ssh/id_ed25519` |
 | **GPU** | NVIDIA RTX 4090 (24GB VRAM) |
 | **Quad repo** | `/srv/qwvoice/quad/` |
 | **Recordings** | `/srv/qwvoice/quad/recordings/` (volume-mounted, survives rebuilds) |
-| **Admin** | Xerial (manages OS-level config, sudoers, firewall) |
+| **Admin** | Xerial (manages OS-level config, firewall, NVIDIA drivers) |
 
 ### SSH Access
 
 ```bash
-ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214
+ssh pinnaclepowerhouse
+# Or explicitly:
+ssh -i ~/.ssh/id_ed25519 -p 5555 dave@83.172.66.214
 ```
 
-### Available Commands (sudo NOPASSWD)
-
+From Windows/WSL environment, use `wsl bash -c` (NOT `-ic`) for SSH commands:
 ```bash
-sudo docker compose *              # Full compose control (up, down, logs, ps, exec, build)
-sudo docker images                 # List images
-sudo docker image prune -f         # Clean up dangling images
+wsl bash -c "ssh pinnaclepowerhouse 'command here'"
 ```
 
-Note: Raw `docker` commands (without `compose`) require sudo. The `qwvoice` user is not in the `docker` group.
+### Container Management — qwvoice-ctl
+
+All Docker operations go through the `qwvoice-ctl` wrapper. No direct `docker` or `docker compose` access.
+
+**Syntax:** `sudo qwvoice-ctl <project-dir> <command> [args...]`
+
+| Command | What it does |
+|---------|-------------|
+| `up` | Start services (`docker compose up -d`) |
+| `down` | Stop services (`docker compose down`) |
+| `restart` | Restart services |
+| `rebuild` | Rebuild images and start (`docker compose up -d --build`) |
+| `logs` | View logs (supports `-f` for follow, `--tail N`) |
+| `ps` | Show running services |
+| `pull` | Pull latest images |
+| `prune` | Remove dangling (unused) images |
+
+**Security validation:** `qwvoice-ctl` validates `docker-compose.yml` before executing `up`, `restart`, or `rebuild`. It blocks:
+- Volume mounts outside `/srv/qwvoice/`
+- `privileged: true`
+- `network_mode: "host"`
+- Dangerous capabilities (`SYS_ADMIN`, `SYS_PTRACE`, `ALL`, `NET_ADMIN`, `NET_RAW`, `DAC_OVERRIDE`)
+- `devices:` entries
+
+GPU passthrough via `deploy.resources.reservations.devices` is allowed (our compose file uses this).
 
 ### Other Services on the Same Server
 
@@ -36,42 +60,38 @@ Note: Raw `docker` commands (without `compose`) require sudo. The `qwvoice` user
 | `qwvoice-whisper` | Standalone faster-whisper (legacy, at `/srv/qwvoice/docker/`) |
 | `ollama` | LLM inference server (port 11434) |
 
-These run from a separate compose file at `/srv/qwvoice/docker/docker-compose.yml` and are independent of Quad.
+Managed via: `sudo qwvoice-ctl /srv/qwvoice/docker <command>`
 
 ## Deploy Workflow
 
 ### Standard Update (code changes)
 
 ```bash
-# On the server:
+ssh pinnaclepowerhouse
 cd /srv/qwvoice/quad
 git pull
-sudo docker compose up -d --build
+sudo qwvoice-ctl /srv/qwvoice/quad rebuild
 ```
 
-This rebuilds the Docker image and restarts the container. Docker layer caching makes it fast (~30-60s) when only source code changed. The `npm ci` layer is cached unless `package.json` or `package-lock.json` changed.
+Docker layer caching makes rebuilds fast (~30-60s) when only source code changed. The `npm ci` layer is cached unless `package.json` or `package-lock.json` changed.
 
 ### One-liner from local machine
 
 ```bash
-ssh -i ~/.ssh/qwvoice_key -p 5555 qwvoice@83.172.66.214 \
-  "cd /srv/qwvoice/quad && git pull && sudo docker compose up -d --build"
+wsl bash -c "ssh pinnaclepowerhouse 'cd /srv/qwvoice/quad && git pull && sudo qwvoice-ctl /srv/qwvoice/quad rebuild'"
 ```
 
 ### When to use what
 
 | Scenario | Command |
 |---|---|
-| **Code changes** (most common) | `git pull && sudo docker compose up -d --build` |
-| **Only .env changed** | `sudo docker compose restart` |
-| **Full rebuild** (dependency changes, Dockerfile changes) | `sudo docker compose up -d --build --no-cache` |
-| **View logs** | `sudo docker compose logs -f quad` |
-| **View recent logs** | `sudo docker compose logs --tail=100 quad` |
-| **Stop the bot** | `sudo docker compose down` |
-| **Check status** | `sudo docker compose ps` |
-| **Clean old images** | `sudo docker image prune -f` |
-
-All compose commands must be run from `/srv/qwvoice/quad/` or with `-f /srv/qwvoice/quad/docker-compose.yml`.
+| **Code changes** (most common) | `git pull && sudo qwvoice-ctl /srv/qwvoice/quad rebuild` |
+| **Only .env changed** | `sudo qwvoice-ctl /srv/qwvoice/quad restart` |
+| **View logs** | `sudo qwvoice-ctl /srv/qwvoice/quad logs -f` |
+| **View recent logs** | `sudo qwvoice-ctl /srv/qwvoice/quad logs --tail=100` |
+| **Stop the bot** | `sudo qwvoice-ctl /srv/qwvoice/quad down` |
+| **Check status** | `sudo qwvoice-ctl /srv/qwvoice/quad ps` |
+| **Clean old images** | `sudo qwvoice-ctl /srv/qwvoice/quad prune` |
 
 ## Docker Architecture
 
@@ -141,36 +161,34 @@ The bot runs directly on Node.js in WSL, loading `.env` from the project root.
 
 | Path | Owner | Notes |
 |---|---|---|
-| `/srv/qwvoice/quad/` | `xerial` | Git repo, source code |
-| `/srv/qwvoice/quad/.env` | `xerial` (mode 600) | Secrets — not readable by qwvoice |
+| `/srv/qwvoice/quad/` | `qwvoice` group | Git repo, source code. `dave` has group write access. |
+| `/srv/qwvoice/quad/.env` | varies | Secrets file |
 | `/srv/qwvoice/quad/recordings/` | `root` | Created by Docker (runs as root inside container) |
-| `/srv/qwvoice/docker/` | `qwvoice` | Legacy whisper + ollama compose |
+| `/srv/qwvoice/docker/` | `qwvoice` group | Legacy whisper + ollama compose |
 
-The `qwvoice` user can `git pull` (repo readable) and run `sudo docker compose` commands, but cannot read `.env` directly. This is fine — Docker reads it as root.
+The `dave` user is in the `qwvoice` group (gid 1002). New files inherit the group via setgid. If containers create files as root, ask Xerial to fix permissions.
 
 ## Troubleshooting
 
 ### Container won't start
 ```bash
-sudo docker compose logs quad           # Check for error messages
-sudo docker compose up quad             # Run in foreground (no -d) to see output
+sudo qwvoice-ctl /srv/qwvoice/quad logs      # Check for error messages
 ```
+
+### "SECURITY: Compose file blocked due to violations"
+The `docker-compose.yml` contains something `qwvoice-ctl` doesn't allow. Read the error — it says exactly what's blocked.
 
 ### Bot is online but not responding to commands
 Discord slash commands are registered globally and can take up to 1 hour to propagate. Check logs for "Registered N global command(s)".
 
 ### GPU not detected
-```bash
-sudo docker compose exec quad python3 -c "import torch; print(torch.cuda.is_available())"
-```
-If `False`, check NVIDIA driver and container runtime: `nvidia-smi` (on host).
+Check NVIDIA driver on host: `nvidia-smi`
 
 ### Recordings not appearing
-Check volume mount: `sudo docker compose exec quad ls -la /app/recordings/`
+Check volume mount via logs or SSH into the server and inspect `/srv/qwvoice/quad/recordings/`.
 
 ### Disk space
 ```bash
 df -h /srv/qwvoice/
-sudo docker images                      # Check image sizes
-sudo docker image prune -f              # Remove dangling images
+sudo qwvoice-ctl /srv/qwvoice/quad prune     # Remove dangling images
 ```

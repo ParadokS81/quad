@@ -32,6 +32,7 @@ import { RosterSync } from './roster-sync.js';
 import { SessionMonitor } from './session-monitor.js';
 import { MumbleConfigListener } from './config-listener.js';
 import { AutoRecord } from './auto-record.js';
+import { type MumbleRecordingSession } from './mumble-session.js';
 import { runFastPipeline } from '../processing/pipeline.js';
 import { loadConfig } from '../../core/config.js';
 
@@ -167,3 +168,31 @@ export const mumbleModule: BotModule = {
     logger.info('Mumble module shut down');
   },
 };
+
+// ---------------------------------------------------------------------------
+// Cross-module exports (used by unified /record command in U4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Start recording in the team's Mumble channel (ignores suppression).
+ * Returns the session, or null if no channel is configured for the team.
+ */
+export function startMumbleRecording(teamId: string): Promise<MumbleRecordingSession | null> {
+  return autoRecord.startForTeam(teamId);
+}
+
+/**
+ * Stop recording in the team's Mumble channel and suppress auto-record
+ * until the channel empties.
+ */
+export function stopMumbleRecording(teamId: string): Promise<void> {
+  return autoRecord.stopForTeam(teamId);
+}
+
+/**
+ * Return usernames of users currently in the team's Mumble channel.
+ * Used by /record auto-detect to decide whether Mumble has players.
+ */
+export function getMumbleChannelUsers(teamId: string): string[] {
+  return autoRecord.getUsernamesInChannel(teamId);
+}

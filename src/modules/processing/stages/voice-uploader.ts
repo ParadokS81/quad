@@ -9,7 +9,7 @@
  *   Registered guilds:  voice-recordings/{teamId}/{demoSha256}/{discordUserId}.ogg
  *   Unregistered:       voice-recordings/{demoSha256}/{playerName}.ogg  (PoC fallback)
  *
- * Firestore doc: /voiceRecordings/{demoSha256}
+ * Firestore doc: /voiceRecordings/{demoSha256}_{teamId}  (or /{demoSha256} if unregistered)
  */
 
 import { stat } from 'node:fs/promises';
@@ -357,7 +357,10 @@ export async function uploadVoiceRecordings(
           totalErrors: totalVerifyErrors,
         };
       }
-      await db.collection('voiceRecordings').doc(segment.demoSha256).set(manifest);
+      const docId = effectiveTeamId
+        ? `${segment.demoSha256}_${effectiveTeamId}`
+        : segment.demoSha256;
+      await db.collection('voiceRecordings').doc(docId).set(manifest);
 
       uploaded++;
       logger.info(`Voice recording uploaded: ${segment.map}`, {

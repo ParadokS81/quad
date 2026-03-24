@@ -1,5 +1,6 @@
 import {
   ChatInputCommandInteraction,
+  type Guild,
   GuildMember,
   MessageFlags,
   PermissionFlagsBits,
@@ -18,15 +19,31 @@ import { rm } from 'node:fs/promises';
 import { logger } from '../../../core/logger.js';
 import { loadConfig } from '../../../core/config.js';
 import { RecordingSession, type SessionSummary } from '../session.js';
+import { sessionRegistry } from '../../../shared/session-registry.js';
+import { getRegistrationForGuild } from '../../registration/register.js';
+import { startMumbleRecording, stopMumbleRecording, getMumbleChannelUsers } from '../../mumble/index.js';
 
 export const recordCommand = new SlashCommandBuilder()
   .setName('record')
   .setDescription('Voice recording commands')
   .addSubcommand((sub) =>
-    sub.setName('start').setDescription('Start recording the voice channel')
+    sub.setName('start')
+      .setDescription('Start recording — auto-detects platform or specify one')
+      .addStringOption((opt) =>
+        opt.setName('platform')
+          .setDescription('Which voice platform to record')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Discord', value: 'discord' },
+            { name: 'Mumble', value: 'mumble' },
+          )
+      )
   )
   .addSubcommand((sub) =>
-    sub.setName('stop').setDescription('Stop recording and save files')
+    sub.setName('stop').setDescription('Stop all active recordings for your team')
+  )
+  .addSubcommand((sub) =>
+    sub.setName('status').setDescription('Show active recording status')
   )
   .addSubcommand((sub) =>
     sub.setName('reset').setDescription('Force-reset: stop recording, leave voice, clear all state')
@@ -35,6 +52,13 @@ export const recordCommand = new SlashCommandBuilder()
 // Module-level state — per-guild sessions for concurrent multi-server recording
 const activeSessions = new Map<string, RecordingSession>();
 const joiningGuilds = new Set<string>(); // Prevent concurrent join attempts per guild
+
+// Reference to DiscordAutoRecord engine — set by recording/index.ts to avoid circular imports
+interface DiscordAutoRecordRef { suppress: (guildId: string) => void; }
+let _discordAutoRecord: DiscordAutoRecordRef | null = null;
+export function setDiscordAutoRecord(ar: DiscordAutoRecordRef): void {
+  _discordAutoRecord = ar;
+}
 
 // Lifecycle callbacks
 type RecordingStartCallback = (session: RecordingSession) => void;
@@ -106,6 +130,7 @@ export async function stopRecording(guildId: string): Promise<SessionSummary | n
   if (!session) return null;
 
   activeSessions.delete(guildId); // Clear immediately to prevent double-stop
+  sessionRegistry.unregister(`discord:${guildId}`);
 
   try {
     return await session.stop();
@@ -153,7 +178,7 @@ function fireStopCallbacks(summary: SessionSummary | null): void {
  * Check bot permissions in a voice channel before attempting to join.
  * Returns null if all good, or a user-facing error string if something is missing.
  */
-function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMember): string | null {
+export function checkVoicePermissions(channel: VoiceBasedChannel, botMember: GuildMember): string | null {
   const perms = channel.permissionsFor(botMember);
   if (!perms) return 'Could not check permissions — the bot role may be misconfigured.';
 
@@ -287,6 +312,166 @@ async function joinWithRetry(opts: {
   return null;
 }
 
+/**
+ * Start a recording session in a voice channel.
+ * Shared by both manual /record start and the auto-record engine.
+ * Returns the session and a summary string, or null if unable to start.
+ */
+export async function startRecordingSession(opts: {
+  voiceChannel: VoiceBasedChannel;
+  guild: Guild;
+  sourceTextChannelId?: string;
+  origin: 'manual' | 'auto';
+  teamId: string;
+}): Promise<{ session: RecordingSession; summary: string } | null> {
+  const { voiceChannel, guild, sourceTextChannelId, origin, teamId } = opts;
+  const guildId = guild.id;
+
+  // Guard: already recording or joining in THIS guild
+  if (activeSessions.has(guildId)) {
+    logger.debug('startRecordingSession blocked — already recording', { guildId });
+    return null;
+  }
+  if (joiningGuilds.has(guildId)) {
+    logger.debug('startRecordingSession blocked — already joining', { guildId });
+    return null;
+  }
+
+  // Lock this guild while joining — prevents concurrent start race condition
+  joiningGuilds.add(guildId);
+
+  // Clean up any stale @discordjs/voice internal state (NOT a DAVE handshake — just memory cleanup)
+  const existingConnection = getVoiceConnection(guildId);
+  if (existingConnection) {
+    logger.info('Cleaning up stale voice connection state', { guildId });
+    try { existingConnection.destroy(); } catch { /* already destroyed */ }
+  }
+
+  const config = loadConfig();
+  const sessionId = randomUUID();
+
+  logger.info('Recording start', {
+    origin,
+    guild: guildId,
+    channel: voiceChannel.name,
+    channelId: voiceChannel.id,
+    sessionId,
+    concurrentSessions: activeSessions.size,
+  });
+
+  const session = new RecordingSession({
+    sessionId,
+    recordingDir: config.recordingDir,
+    guildId,
+    guildName: guild.name,
+    channelId: voiceChannel.id,
+    channelName: voiceChannel.name,
+    sourceTextChannelId,
+  });
+
+  try {
+    await session.init();
+  } catch (err) {
+    joiningGuilds.delete(guildId);
+    logger.error('Failed to create session directory', {
+      error: err instanceof Error ? err.message : String(err),
+      sessionId,
+    });
+    return null;
+  }
+
+  const connection = await joinWithRetry({ voiceChannel, guildId, sessionId });
+
+  if (!connection) {
+    joiningGuilds.delete(guildId);
+    await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
+
+    // Ensure bot actually leaves via REST API
+    try {
+      const me = guild.members.me;
+      if (me?.voice.channelId) {
+        await me.voice.disconnect();
+        logger.info('REST disconnect after join failure', { guildId });
+      }
+    } catch (err) {
+      logger.warn('REST disconnect failed after join failure', {
+        guildId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return null;
+  }
+
+  // Voice connected — release the joining lock
+  joiningGuilds.delete(guildId);
+
+  // Register session BEFORE starting — so VoiceStateUpdate handler can find it
+  activeSessions.set(guildId, session);
+  sessionRegistry.register(`discord:${guildId}`, {
+    platform: 'discord',
+    origin,
+    sessionId: session.sessionId,
+    channelId: session.channelId,
+    guildId,
+    teamId,
+    startTime: session.startTime,
+  });
+
+  // Start the session — sets up speaking listeners and subscribes to users
+  session.start(connection, guild);
+
+  // Fire start callbacks (e.g., Firestore session tracker)
+  for (const cb of onStartCallbacks) {
+    try {
+      cb(session);
+    } catch (err) {
+      logger.error('Post-recording-start callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Fire initial participant snapshot
+  const initialParticipants = voiceChannel.members
+    .filter((m) => !m.user.bot)
+    .map((m) => m.displayName);
+  fireParticipantChangeCallbacks(guildId, initialParticipants);
+
+  // If the connection is lost (kicked, network failure), auto-stop and save
+  session.onConnectionLost = () => {
+    logger.warn('Connection lost — auto-stopping recording', { sessionId, guildId });
+    stopRecording(guildId).catch((err) => {
+      logger.error('Failed to auto-stop recording after connection loss', {
+        error: err instanceof Error ? err.message : String(err),
+        sessionId,
+      });
+    });
+  };
+
+  const userCount = voiceChannel.members.filter((m) => !m.user.bot).size;
+  const startUnix = Math.floor(session.startTime.getTime() / 1000);
+  const shortId = sessionId.slice(0, 8);
+
+  logger.info('Recording started', {
+    sessionId, origin,
+    channel: voiceChannel.name,
+    channelId: voiceChannel.id,
+    guild: guildId,
+    usersInChannel: userCount,
+  });
+
+  return {
+    session,
+    summary: [
+      `**Channel:** <#${voiceChannel.id}>`,
+      `**Recording ID:** \`${shortId}\``,
+      `**Started:** <t:${startUnix}:t>`,
+      `**Users in channel:** ${userCount}`,
+    ].join('\n'),
+  };
+}
+
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -308,6 +493,9 @@ export async function handleRecordCommand(interaction: ChatInputCommandInteracti
     case 'stop':
       await handleStop(interaction);
       break;
+    case 'status':
+      await handleStatus(interaction);
+      break;
     case 'reset':
       await handleReset(interaction);
       break;
@@ -322,11 +510,68 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  const guildId = interaction.guildId;
+  const explicitPlatform = interaction.options.getString('platform') as 'discord' | 'mumble' | null;
+  const member = interaction.member as GuildMember;
+  const voiceChannel = member.voice.channel;
+
+  // --- Mumble path: explicit platform:mumble, or auto-detect when user is not in Discord voice ---
+  if (explicitPlatform === 'mumble' || (!explicitPlatform && !voiceChannel)) {
+    const registration = await getRegistrationForGuild(guildId);
+
+    if (!registration) {
+      const msg = explicitPlatform
+        ? 'No team registration found for this server.'
+        : 'No active voice channel found. Join a Discord voice channel or have team members in Mumble.';
+      await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    // For auto-detect: confirm Mumble channel has users
+    if (!explicitPlatform) {
+      const mumbleUsers = getMumbleChannelUsers(registration.teamId);
+      if (mumbleUsers.length === 0) {
+        await interaction.reply({
+          content: 'No active voice channel found. Join a Discord voice channel or have team members in Mumble.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    }
+
+    // Permission: user must be a registered team member
+    if (!(interaction.user.id in registration.knownPlayers)) {
+      await interaction.reply({
+        content: 'Only registered team members can start Mumble recording.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    const session = await startMumbleRecording(registration.teamId);
+    if (!session) {
+      await interaction.editReply('Failed to start Mumble recording. Is the Mumble channel active?');
+      return;
+    }
+
+    await interaction.editReply([
+      `\u{1F534} **Recording started**`,
+      ``,
+      `**Platform:** Mumble`,
+      `**Channel:** ${session.channelName}`,
+    ].join('\n'));
+    return;
+  }
+
+  // --- Discord path: explicit platform:discord, or auto-detect when user is in Discord voice ---
+
   // Guard: already recording or joining in THIS guild
-  if (activeSessions.has(interaction.guildId)) {
-    const existing = activeSessions.get(interaction.guildId)!;
+  if (activeSessions.has(guildId)) {
+    const existing = activeSessions.get(guildId)!;
     logger.warn('Record start blocked — already recording', {
-      guildId: interaction.guildId,
+      guildId,
       guildName: interaction.guild.name,
       existingSessionId: existing.sessionId,
       existingChannel: existing.channelId,
@@ -336,9 +581,9 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     await interaction.reply({ content: 'Already recording in this server.', flags: MessageFlags.Ephemeral });
     return;
   }
-  if (joiningGuilds.has(interaction.guildId)) {
+  if (joiningGuilds.has(guildId)) {
     logger.warn('Record start blocked — already joining', {
-      guildId: interaction.guildId,
+      guildId,
       guildName: interaction.guild.name,
       allJoiningGuilds: [...joiningGuilds],
       user: interaction.user.tag,
@@ -346,10 +591,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     await interaction.reply({ content: 'Already connecting — please wait.', flags: MessageFlags.Ephemeral });
     return;
   }
-
-  // Validate: user must be in a voice channel
-  const member = interaction.member as GuildMember;
-  const voiceChannel = member.voice.channel;
 
   if (!voiceChannel) {
     await interaction.reply({ content: 'You must be in a voice channel to start recording.', flags: MessageFlags.Ephemeral });
@@ -369,81 +610,23 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   // Defer reply immediately — voice join can take several seconds (DAVE handshake)
   await interaction.deferReply();
 
-  // Lock this guild while joining — prevents concurrent /record start race condition
-  joiningGuilds.add(interaction.guildId);
+  // Look up team registration for teamId (used in session registry for cross-platform stop)
+  const registration = await getRegistrationForGuild(guildId);
 
-  // Clean up any stale @discordjs/voice internal state (NOT a DAVE handshake — just memory cleanup)
-  const existingConnection = getVoiceConnection(interaction.guildId);
-  if (existingConnection) {
-    logger.info('Cleaning up stale voice connection state', { guildId: interaction.guildId });
-    try { existingConnection.destroy(); } catch { /* already destroyed */ }
-  }
-
-  const config = loadConfig();
-  const sessionId = randomUUID();
-  const guildId = interaction.guildId;
-
-  logger.info('Recording start requested', {
-    user: interaction.user.tag,
-    guild: guildId,
-    channel: voiceChannel.name,
-    channelId: voiceChannel.id,
-    sessionId,
-    concurrentSessions: activeSessions.size,
-  });
-
-  // Create session and output directory
-  const session = new RecordingSession({
-    sessionId,
-    recordingDir: config.recordingDir,
-    guildId,
-    guildName: interaction.guild.name,
-    channelId: voiceChannel.id,
-    channelName: voiceChannel.name,
-    sourceTextChannelId: interaction.channelId,
-  });
-
-  try {
-    await session.init();
-  } catch (err) {
-    joiningGuilds.delete(guildId);
-    logger.error('Failed to create session directory', {
-      error: err instanceof Error ? err.message : String(err),
-      sessionId,
-    });
-    await interaction.editReply({ content: 'Failed to create recording directory.' });
+  if (!registration) {
+    await interaction.editReply('No team registration found for this server. Use `/register` first.');
     return;
   }
 
-  // Join voice channel — with retry for transient DAVE handshake failures
-  const connection = await joinWithRetry({
+  const result = await startRecordingSession({
     voiceChannel,
-    guildId,
-    sessionId,
+    guild: interaction.guild,
+    sourceTextChannelId: interaction.channelId,
+    origin: 'manual',
+    teamId: registration.teamId,
   });
 
-  if (!connection) {
-    joiningGuilds.delete(guildId);
-    // Clean up empty session directory from failed attempt
-    await rm(session.outputDir, { recursive: true, force: true }).catch(() => {});
-
-    // Ensure bot actually leaves the voice channel.
-    // connection.destroy() in joinWithRetry may not send a clean disconnect
-    // if the DAVE handshake never completed, leaving the bot visually stuck.
-    // REST API disconnect (requires Move Members) is the most reliable method.
-    try {
-      const me = interaction.guild?.members.me;
-      if (me?.voice.channelId) {
-        await me.voice.disconnect();
-        logger.info('REST disconnect after join failure', { guildId });
-      }
-    } catch (err) {
-      logger.warn('REST disconnect failed after join failure', {
-        guildId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
+  if (!result) {
     await interaction.editReply({
       content: [
         'Failed to join voice channel after 3 attempts. Make sure the bot has all four permissions on this channel:',
@@ -461,46 +644,10 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
-  // Voice connected — release the joining lock
-  joiningGuilds.delete(guildId);
-
-  // Register session BEFORE starting — so VoiceStateUpdate handler can find it
-  activeSessions.set(guildId, session);
-
-  // Start the session — sets up speaking listeners and subscribes to users
-  session.start(connection, interaction.guild);
-
-  // Fire start callbacks (e.g., Firestore session tracker)
-  const initialParticipants = voiceChannel.members
-    .filter((m) => !m.user.bot)
-    .map((m) => m.displayName);
-  for (const cb of onStartCallbacks) {
-    try {
-      cb(session);
-    } catch (err) {
-      logger.error('Post-recording-start callback failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  // Also fire initial participant snapshot
-  fireParticipantChangeCallbacks(guildId, initialParticipants);
-
-  // If the connection is lost (kicked, network failure), auto-stop and save
-  session.onConnectionLost = () => {
-    logger.warn('Connection lost — auto-stopping recording', { sessionId, guildId });
-    stopRecording(guildId).catch((err) => {
-      logger.error('Failed to auto-stop recording after connection loss', {
-        error: err instanceof Error ? err.message : String(err),
-        sessionId,
-      });
-    });
-  };
-
-  // Count current users in the channel (excluding the bot)
+  const { session } = result;
   const userCount = voiceChannel.members.filter((m) => !m.user.bot).size;
   const startUnix = Math.floor(session.startTime.getTime() / 1000);
-  const shortId = sessionId.slice(0, 8);
+  const shortId = session.sessionId.slice(0, 8);
 
   await interaction.editReply({
     content: [
@@ -512,61 +659,58 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       `**Users in channel:** ${userCount}`,
     ].join('\n'),
   });
-
-  logger.info('Recording started', {
-    sessionId,
-    channel: voiceChannel.name,
-    channelId: voiceChannel.id,
-    guild: interaction.guildId,
-    usersInChannel: userCount,
-  });
 }
 
 async function handleStop(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId;
-  if (!guildId || !activeSessions.has(guildId)) {
-    // Clean up any stale @discordjs/voice state (no DAVE handshake — just memory cleanup)
-    if (guildId) {
-      const vc = getVoiceConnection(guildId);
-      if (vc) {
-        try { vc.destroy(); } catch { /* */ }
-        await interaction.reply({ content: 'Not recording, but cleaned up stale voice state. Try `/record start` again.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-    }
-    await interaction.reply({ content: 'Not currently recording in this server.', flags: MessageFlags.Ephemeral });
+  if (!guildId) {
+    await interaction.reply({ content: 'Must be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const session = activeSessions.get(guildId)!;
-  const sessionId = session.sessionId;
+  // Check registry for active sessions across all platforms
+  const sessions = sessionRegistry.getByGuildId(guildId);
 
-  logger.info('Recording stop requested', {
-    user: interaction.user.tag,
-    guildId,
-    guildName: interaction.guild?.name,
-    sessionId,
-    sessionGuildId: session.guildId,
-    sessionChannel: session.channelId,
-    allActiveGuilds: [...activeSessions.keys()],
-  });
+  if (sessions.length === 0) {
+    // No tracked sessions — clean up stale @discordjs/voice state if any
+    const vc = getVoiceConnection(guildId);
+    if (vc) {
+      try { vc.destroy(); } catch { /* */ }
+      await interaction.reply({ content: 'Not recording, but cleaned up stale voice state. Try `/record start` again.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.reply({ content: 'No active recordings in this server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
 
-  // Defer reply immediately — must happen within 3s of the interaction
   await interaction.deferReply();
 
-  const summary = await stopRecording(guildId);
+  const replyLines: string[] = [];
 
-  // Best-effort reply with summary — recording is already saved at this point
-  try {
-    if (summary) {
-      const durationSec = Math.round((summary.endTime.getTime() - summary.startTime.getTime()) / 1000);
-      const duration = formatDuration(durationSec);
-      const shortId = summary.sessionId.slice(0, 8);
-      const trackList = summary.tracks.map((t) => `${t.track_number}. ${t.discord_display_name}`).join('\n');
+  for (const regSession of sessions) {
+    if (regSession.platform === 'discord') {
+      logger.info('Recording stop requested', {
+        user: interaction.user.tag,
+        guildId,
+        guildName: interaction.guild?.name,
+        sessionId: regSession.sessionId,
+        allActiveGuilds: [...activeSessions.keys()],
+      });
 
-      await interaction.editReply({
-        content: [
-          `\u2B1B **Recording ended**`,
+      const summary = await stopRecording(guildId);
+
+      // Suppress Discord auto-record if this was an auto-started session
+      if (regSession.origin === 'auto' && _discordAutoRecord) {
+        _discordAutoRecord.suppress(guildId);
+      }
+
+      if (summary) {
+        const durationSec = Math.round((summary.endTime.getTime() - summary.startTime.getTime()) / 1000);
+        const duration = formatDuration(durationSec);
+        const shortId = summary.sessionId.slice(0, 8);
+        const trackList = summary.tracks.map((t) => `${t.track_number}. ${t.discord_display_name}`).join('\n');
+        replyLines.push(
+          `\u2B1B **Discord recording ended**`,
           ``,
           `**Channel:** <#${summary.channelId}>`,
           `**Recording ID:** \`${shortId}\``,
@@ -574,22 +718,57 @@ async function handleStop(interaction: ChatInputCommandInteraction): Promise<voi
           `**Tracks:** ${summary.trackCount}`,
           ``,
           trackList,
-        ].join('\n'),
-      });
-    } else {
-      await interaction.editReply({ content: 'Recording stopped.' });
+        );
+        logger.info('Discord recording stopped', { sessionId: summary.sessionId, trackCount: summary.trackCount });
+      } else {
+        replyLines.push('Discord recording stopped.');
+      }
+
+      fireStopCallbacks(summary);
+
+    } else if (regSession.platform === 'mumble') {
+      if (!regSession.teamId) {
+        logger.error('Mumble stop failed: missing teamId in session registry', { sessionId: regSession.sessionId });
+        replyLines.push(`\u2B1B **Mumble recording stop failed** — missing team reference. Recording may still be active.`);
+      } else {
+        await stopMumbleRecording(regSession.teamId);
+        replyLines.push(`\u2B1B **Mumble recording ended**`);
+        logger.info('Mumble recording stopped', { teamId: regSession.teamId, sessionId: regSession.sessionId });
+      }
     }
+  }
+
+  try {
+    await interaction.editReply({ content: replyLines.join('\n') || 'Recording stopped.' });
   } catch (err) {
     logger.warn('Could not reply to stop interaction — recording was still saved', {
       error: err instanceof Error ? err.message : String(err),
-      sessionId,
     });
   }
+}
 
-  logger.info('Recording stopped', { sessionId, trackCount: summary?.trackCount });
+async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: 'Must be used in a server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
 
-  // Fire post-recording callbacks (e.g., auto-trigger processing)
-  fireStopCallbacks(summary);
+  const sessions = sessionRegistry.getByGuildId(guildId);
+
+  if (sessions.length === 0) {
+    await interaction.reply({ content: 'No active recordings.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const lines = sessions.map((s) => {
+    const durationSec = Math.floor((Date.now() - s.startTime.getTime()) / 1000);
+    const mins = Math.floor(durationSec / 60);
+    const secs = durationSec % 60;
+    return `**${s.platform}** — ${mins}m ${secs}s — ${s.origin} — channel: ${s.channelId}`;
+  });
+
+  await interaction.reply({ content: `Active recordings:\n${lines.join('\n')}`, flags: MessageFlags.Ephemeral });
 }
 
 async function handleReset(interaction: ChatInputCommandInteraction): Promise<void> {

@@ -202,32 +202,37 @@ export async function runFastPipeline(
         logger.warn('Mumble session has no teamId in metadata — match filtering will be limited');
       }
     } else {
-      try {
-        const registrations = await getRegistrationsForGuild(session.guild!.id);
-        if (registrations.length === 1) {
-          registration = registrations[0];
-        } else if (registrations.length > 1) {
-          const sourceChannel = session.source_text_channel_id;
-          if (sourceChannel) {
-            registration = registrations.find(r => r.registeredChannelId === sourceChannel) || null;
+      const discordGuildId = session.guild?.id;
+      if (!discordGuildId) {
+        logger.warn('Non-mumble session has no guild ID — match filtering will be limited');
+      } else {
+        try {
+          const registrations = await getRegistrationsForGuild(discordGuildId);
+          if (registrations.length === 1) {
+            registration = registrations[0];
+          } else if (registrations.length > 1) {
+            const sourceChannel = session.source_text_channel_id;
+            if (sourceChannel) {
+              registration = registrations.find(r => r.registeredChannelId === sourceChannel) || null;
+            }
           }
-        }
-        if (registration) {
-          teamTag = registration.teamTag || teamTag;
-          knownPlayers = registration.knownPlayers || {};
-          logger.info('Registration found for guild', {
-            teamTag,
-            knownPlayerCount: Object.keys(knownPlayers).length,
+          if (registration) {
+            teamTag = registration.teamTag || teamTag;
+            knownPlayers = registration.knownPlayers || {};
+            logger.info('Registration found for guild', {
+              teamTag,
+              knownPlayerCount: Object.keys(knownPlayers).length,
+            });
+          } else {
+            logger.warn('No active registration for guild — match filtering will be limited', {
+              guildId: discordGuildId,
+            });
+          }
+        } catch (err) {
+          logger.warn('Failed to look up registration — continuing with session metadata only', {
+            error: err instanceof Error ? err.message : String(err),
           });
-        } else {
-          logger.warn('No active registration for guild — match filtering will be limited', {
-            guildId: session.guild!.id,
-          });
         }
-      } catch (err) {
-        logger.warn('Failed to look up registration — continuing with session metadata only', {
-          error: err instanceof Error ? err.message : String(err),
-        });
       }
     }
 
